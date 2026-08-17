@@ -1,0 +1,15 @@
+*.class
+*.log
+*.jar
+!gradle/wrapper/gradle-wrapper.jar
+*.war
+*.zip
+*.tar.gz
+
+build/
+**/build/
+.gradle/
+.kotlin/
+.idea/
+*.iml
+.vscode/
