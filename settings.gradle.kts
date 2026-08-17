@@ -20,5 +20,6 @@ include(
     ":providers:anthropic",
     ":providers:gemini",
     ":providers:bedrock",
+    ":providers:grok",
     ":providers:openai-compatible",
 )

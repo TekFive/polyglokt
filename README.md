@@ -13,6 +13,7 @@ The project is split into small Gradle modules. Add `polyglotkt-core` plus only 
 | `polyglotkt-anthropic` | Official Anthropic Java SDK | ✓ | ✓ | ✓ | ✓ | — |
 | `polyglotkt-gemini` | Official Google Gen AI Java SDK | ✓ | ✓ | ✓ | ✓ | ✓ |
 | `polyglotkt-bedrock` | Official AWS SDK for Kotlin | ✓ | ✓ | ✓ | — | — |
+| `polyglotkt-grok` | xAI preset over the OpenAI-compatible API | ✓ | ✓ | ✓ | ✓ | — |
 | `polyglotkt-openai-compatible` | OkHttp Chat Completions adapter | ✓ | ✓ | ✓ | ✓ | ✓ |
 
 Bedrock deliberately advertises only the portable Converse features currently implemented. Capabilities are checked before a request is sent, so unsupported behavior fails locally and predictably.
@@ -42,6 +43,7 @@ dependencies {
     // implementation("org.tekfive.polyglotkt:polyglotkt-anthropic:0.1.0")
     // implementation("org.tekfive.polyglotkt:polyglotkt-gemini:0.1.0")
     // implementation("org.tekfive.polyglotkt:polyglotkt-bedrock:0.1.0")
+    // implementation("org.tekfive.polyglotkt:polyglotkt-grok:0.1.0")
     // implementation("org.tekfive.polyglotkt:polyglotkt-openai-compatible:0.1.0")
 }
 ```
@@ -126,13 +128,24 @@ val request = ChatRequest(
 
 ### OpenAI-compatible services
 
-Use the generic adapter where no suitable official JVM SDK exists:
+Grok has a dedicated preset with xAI's endpoint, capabilities, and optional conversation-affinity header:
 
 ```kotlin
-val groq = OpenAiCompatibleProvider(
-    id = ProviderId("groq"),
-    apiKey = System.getenv("GROQ_API_KEY"),
-    baseUrl = "https://api.groq.com/openai/v1",
+val grok = GrokProvider(
+    GrokConfig(
+        apiKey = System.getenv("XAI_API_KEY"),
+        conversationId = "my-conversation", // optional; improves prompt-cache affinity
+    ),
+)
+```
+
+Use the generic adapter for other services where no suitable official JVM SDK exists:
+
+```kotlin
+val deepSeek = OpenAiCompatibleProvider(
+    id = ProviderId("deepseek"),
+    apiKey = System.getenv("DEEPSEEK_API_KEY"),
+    baseUrl = "https://api.deepseek.com/v1",
 )
 ```
 

@@ -48,6 +48,7 @@ import org.tekfive.polyglot.ProviderErrorKind
 import org.tekfive.polyglot.ProviderException
 import org.tekfive.polyglot.ProviderId
 import org.tekfive.polyglot.RateLimits
+import org.tekfive.polyglot.ReasoningEffort
 import org.tekfive.polyglot.ResponseFormat
 import org.tekfive.polyglot.StreamEvent
 import org.tekfive.polyglot.ToolChoice
@@ -180,6 +181,9 @@ class OpenAiCompatibleProvider(
         request.options.topP?.let { put("top_p", it) }
         request.options.presencePenalty?.let { put("presence_penalty", it) }
         request.options.frequencyPenalty?.let { put("frequency_penalty", it) }
+        request.options.reasoningEffort
+            ?.takeUnless { it == ReasoningEffort.NONE }
+            ?.let { put("reasoning_effort", it.name.lowercase()) }
         if (request.options.stopSequences.isNotEmpty()) {
             putJsonArray("stop") { request.options.stopSequences.forEach { add(JsonPrimitive(it)) } }
         }
