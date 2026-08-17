@@ -1,6 +1,6 @@
-# PolyglotKt
+# PolygloKt
 
-PolyglotKt is a Kotlin-first, provider-neutral API for chat, streaming, tools, structured output, embeddings, and controlled provider fallback.
+PolygloKt is a Kotlin-first, provider-neutral API for chat, streaming, tools, structured output, embeddings, and controlled provider fallback.
 
 The project is split into small Gradle modules. Add `polyglotkt-core` plus only the provider adapters you use; an application using Gemini does not download the OpenAI, Anthropic, or AWS SDKs.
 
