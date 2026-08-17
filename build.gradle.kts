@@ -2,9 +2,21 @@ plugins {
     alias(libs.plugins.kotlin.jvm) apply false
 }
 
+val isJitPackBuild = providers.environmentVariable("JITPACK").orNull == "true"
+val jitPackGroup = if (isJitPackBuild) {
+    val ownerGroup = providers.environmentVariable("GROUP").orNull
+    val repository = providers.environmentVariable("ARTIFACT").orNull
+    if (!ownerGroup.isNullOrBlank() && !repository.isNullOrBlank()) "$ownerGroup.$repository" else null
+} else {
+    null
+}
+val jitPackVersion = providers.environmentVariable("VERSION").orNull.takeIf { isJitPackBuild }
+val publicationGroup = providers.gradleProperty("group").orElse(jitPackGroup ?: "org.tekfive.polyglotkt").get()
+val publicationVersion = providers.gradleProperty("version").orElse(jitPackVersion ?: "0.1.0").get()
+
 allprojects {
-    group = "org.tekfive.polyglotkt"
-    version = "0.1.0"
+    group = publicationGroup
+    version = publicationVersion
 }
 
 configure(subprojects.filterNot { it.path == ":providers" }) {

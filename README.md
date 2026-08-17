@@ -48,6 +48,25 @@ dependencies {
 }
 ```
 
+### JitPack
+
+JitPack publishes each Gradle subproject separately. Use the individual artifacts so your application downloads only the provider integrations it needs:
+
+```kotlin
+repositories {
+    mavenCentral()
+    maven("https://jitpack.io")
+}
+
+dependencies {
+    val polyglotKtVersion = "v0.1.0" // release tag or commit hash
+    implementation("com.github.TekFive.polyglotkt:polyglotkt-core:$polyglotKtVersion")
+    implementation("com.github.TekFive.polyglotkt:polyglotkt-grok:$polyglotKtVersion")
+}
+```
+
+The aggregate coordinate `com.github.TekFive:polyglotkt:<version>` includes every provider module and its SDK dependencies. Prefer individual module coordinates unless that is intentional.
+
 ## Quick start
 
 ```kotlin
