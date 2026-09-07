@@ -37,14 +37,14 @@ repositories {
 }
 
 dependencies {
-    implementation("org.tekfive.polyglotkt:polyglotkt-core:1.0.1")
-    implementation("org.tekfive.polyglotkt:polyglotkt-openai:1.0.1")
+    implementation("org.tekfive.polyglotkt:polyglotkt-core:1.0.2")
+    implementation("org.tekfive.polyglotkt:polyglotkt-openai:1.0.2")
     // Add only what you use:
-    // implementation("org.tekfive.polyglotkt:polyglotkt-anthropic:1.0.1")
-    // implementation("org.tekfive.polyglotkt:polyglotkt-gemini:1.0.1")
-    // implementation("org.tekfive.polyglotkt:polyglotkt-bedrock:1.0.1")
-    // implementation("org.tekfive.polyglotkt:polyglotkt-grok:1.0.1")
-    // implementation("org.tekfive.polyglotkt:polyglotkt-openai-compatible:1.0.1")
+    // implementation("org.tekfive.polyglotkt:polyglotkt-anthropic:1.0.2")
+    // implementation("org.tekfive.polyglotkt:polyglotkt-gemini:1.0.2")
+    // implementation("org.tekfive.polyglotkt:polyglotkt-bedrock:1.0.2")
+    // implementation("org.tekfive.polyglotkt:polyglotkt-grok:1.0.2")
+    // implementation("org.tekfive.polyglotkt:polyglotkt-openai-compatible:1.0.2")
 }
 ```
 
@@ -59,7 +59,7 @@ repositories {
 }
 
 dependencies {
-    val polyglotKtVersion = "v1.0.1" // release tag or commit hash
+    val polyglotKtVersion = "v1.0.2" // release tag or commit hash
     implementation("com.github.TekFive.polyglotkt:polyglotkt-core:$polyglotKtVersion")
     implementation("com.github.TekFive.polyglotkt:polyglotkt-grok:$polyglotKtVersion")
 }
@@ -169,6 +169,8 @@ val deepSeek = OpenAiCompatibleProvider(
 ```
 
 The same adapter can target DeepSeek, Groq, OpenRouter, Together, Fireworks, Perplexity, or a local vLLM server. Override `capabilities` when an endpoint implements only a subset of the OpenAI format.
+
+For models that accept `xhigh`, use `GenerationOptions(reasoningEffort = ReasoningEffort.XHIGH)`. The OpenAI-compatible adapter sends this as `reasoning_effort: "xhigh"`. Supported effort levels depend on the target model; configure the adapter with `capabilities = OpenAiCompatibleProvider.DEFAULT_CAPABILITIES + Capability.REASONING` when the endpoint supports reasoning options.
 
 ## API design
 

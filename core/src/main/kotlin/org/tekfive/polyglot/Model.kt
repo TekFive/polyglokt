@@ -127,6 +127,8 @@ enum class ReasoningEffort {
     LOW,
     MEDIUM,
     HIGH,
+    /** Extra-high effort for models that accept `xhigh`. */
+    XHIGH,
 }
 
 data class GenerationOptions(

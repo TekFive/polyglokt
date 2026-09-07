@@ -2,21 +2,27 @@ package org.tekfive.polyglot.openaicompatible
 
 import kotlinx.coroutines.flow.toList
 import kotlinx.coroutines.test.runTest
+import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.jsonObject
 import mockwebserver3.MockResponse
 import mockwebserver3.MockWebServer
 import org.junit.jupiter.params.ParameterizedTest
 import org.junit.jupiter.params.provider.MethodSource
+import org.junit.jupiter.params.provider.ValueSource
+import org.tekfive.polyglot.Capability
 import org.tekfive.polyglot.ChatRequest
 import org.tekfive.polyglot.EmbeddingRequest
 import org.tekfive.polyglot.FinishReason
+import org.tekfive.polyglot.GenerationOptions
 import org.tekfive.polyglot.Message
 import org.tekfive.polyglot.ModelTarget
 import org.tekfive.polyglot.PolyglotClient
 import org.tekfive.polyglot.ProviderErrorKind
 import org.tekfive.polyglot.ProviderException
 import org.tekfive.polyglot.ProviderId
+import org.tekfive.polyglot.ReasoningEffort
 import org.tekfive.polyglot.StreamEvent
 import org.tekfive.polyglot.ToolDefinition
 import kotlin.test.AfterTest
@@ -161,6 +167,52 @@ data: [DONE]
 
         assertEquals("Think", response.reasoning)
         assertEquals("Answer", response.text)
+    }
+
+    @ParameterizedTest
+    @ValueSource(booleans = [false, true])
+    fun `sends xhigh effort and preserves reasoning in both response modes`(streaming: Boolean) = runTest {
+        val body = if (streaming) {
+            """data: {"choices":[{"delta":{"reasoning":"Think","content":"Answer"},"finish_reason":"stop"}]}
+
+data: [DONE]
+
+"""
+        } else {
+            """{"choices":[{"message":{"reasoning":"Think","content":"Answer"},"finish_reason":"stop"}]}"""
+        }
+        server.enqueue(
+            MockResponse.Builder()
+                .setHeader("Content-Type", if (streaming) "text/event-stream" else "application/json")
+                .body(body)
+                .build(),
+        )
+        val reasoningProvider = OpenAiCompatibleProvider(
+            providerId,
+            "secret",
+            server.url("/").toString(),
+            capabilities = OpenAiCompatibleProvider.DEFAULT_CAPABILITIES + Capability.REASONING,
+        )
+        val client = PolyglotClient(listOf(reasoningProvider))
+        val request = ChatRequest(
+            ModelTarget(providerId, "reasoning-model"),
+            listOf(Message.user("hi")),
+            options = GenerationOptions(reasoningEffort = ReasoningEffort.XHIGH),
+        )
+
+        val response = if (streaming) {
+            val events = client.stream(request).toList()
+            assertEquals(listOf("Think"), events.filterIsInstance<StreamEvent.ReasoningDelta>().map { it.text })
+            assertIs<StreamEvent.Completed>(events.last()).response
+        } else {
+            client.complete(request)
+        }
+
+        assertEquals("Think", response.reasoning)
+        assertEquals("Answer", response.text)
+        val payload = Json.parseToJsonElement(server.takeRequest().body!!.utf8()).jsonObject
+        assertEquals(JsonPrimitive("xhigh"), payload["reasoning_effort"])
+        assertEquals(JsonPrimitive(streaming), payload["stream"])
     }
 
     companion object {
