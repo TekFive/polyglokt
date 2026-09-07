@@ -37,14 +37,14 @@ repositories {
 }
 
 dependencies {
-    implementation("org.tekfive.polyglotkt:polyglotkt-core:1.0.0")
-    implementation("org.tekfive.polyglotkt:polyglotkt-openai:1.0.0")
+    implementation("org.tekfive.polyglotkt:polyglotkt-core:1.0.1")
+    implementation("org.tekfive.polyglotkt:polyglotkt-openai:1.0.1")
     // Add only what you use:
-    // implementation("org.tekfive.polyglotkt:polyglotkt-anthropic:1.0.0")
-    // implementation("org.tekfive.polyglotkt:polyglotkt-gemini:1.0.0")
-    // implementation("org.tekfive.polyglotkt:polyglotkt-bedrock:1.0.0")
-    // implementation("org.tekfive.polyglotkt:polyglotkt-grok:1.0.0")
-    // implementation("org.tekfive.polyglotkt:polyglotkt-openai-compatible:1.0.0")
+    // implementation("org.tekfive.polyglotkt:polyglotkt-anthropic:1.0.1")
+    // implementation("org.tekfive.polyglotkt:polyglotkt-gemini:1.0.1")
+    // implementation("org.tekfive.polyglotkt:polyglotkt-bedrock:1.0.1")
+    // implementation("org.tekfive.polyglotkt:polyglotkt-grok:1.0.1")
+    // implementation("org.tekfive.polyglotkt:polyglotkt-openai-compatible:1.0.1")
 }
 ```
 
@@ -59,7 +59,7 @@ repositories {
 }
 
 dependencies {
-    val polyglotKtVersion = "v1.0.0" // release tag or commit hash
+    val polyglotKtVersion = "v1.0.1" // release tag or commit hash
     implementation("com.github.TekFive.polyglotkt:polyglotkt-core:$polyglotKtVersion")
     implementation("com.github.TekFive.polyglotkt:polyglotkt-grok:$polyglotKtVersion")
 }

@@ -115,7 +115,7 @@ class OpenAiCompatibleProvider(
                     text.append(it)
                     emit(StreamEvent.TextDelta(it))
                 }
-                delta["reasoning_content"]?.jsonPrimitive?.contentOrNull?.let {
+                delta.reasoningText()?.let {
                     reasoning.append(it)
                     emit(StreamEvent.ReasoningDelta(it))
                 }
@@ -309,9 +309,14 @@ class OpenAiCompatibleProvider(
             finishReason = choice["finish_reason"]?.jsonPrimitive?.contentOrNull.toFinishReason(),
             structuredOutput = structured,
             providerMetadata = root["id"]?.jsonPrimitive?.contentOrNull?.let { mapOf("requestId" to it) }.orEmpty(),
-            reasoning = message["reasoning_content"]?.jsonPrimitive?.contentOrNull,
+            reasoning = message.reasoningText(),
         )
     }
+
+    // vLLM uses reasoning; older servers and other compatible APIs use reasoning_content.
+    private fun JsonObject.reasoningText(): String? =
+        get("reasoning")?.jsonPrimitive?.contentOrNull
+            ?: get("reasoning_content")?.jsonPrimitive?.contentOrNull
 
     private suspend fun execute(path: String, payload: JsonObject): Response {
         val url = endpoint.newBuilder().addPathSegments(path).build()

@@ -6,10 +6,14 @@ import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import mockwebserver3.MockResponse
 import mockwebserver3.MockWebServer
+import org.junit.jupiter.params.ParameterizedTest
+import org.junit.jupiter.params.provider.MethodSource
 import org.tekfive.polyglot.ChatRequest
 import org.tekfive.polyglot.EmbeddingRequest
+import org.tekfive.polyglot.FinishReason
 import org.tekfive.polyglot.Message
 import org.tekfive.polyglot.ModelTarget
+import org.tekfive.polyglot.PolyglotClient
 import org.tekfive.polyglot.ProviderErrorKind
 import org.tekfive.polyglot.ProviderException
 import org.tekfive.polyglot.ProviderId
@@ -106,5 +110,67 @@ data: [DONE]
         }
         assertEquals(ProviderErrorKind.RATE_LIMIT, error.kind)
         assertTrue(error.retryable)
+    }
+
+    @ParameterizedTest
+    @MethodSource("reasoningFields")
+    fun `streams reasoning aliases without losing or duplicating tokens`(fields: String) = runTest {
+        server.enqueue(
+            MockResponse.Builder().setHeader("Content-Type", "text/event-stream").body(
+                """data: {"choices":[{"delta":{"role":"assistant","content":null,"reasoning":null,"reasoning_content":null}}]}
+
+data: {"choices":[{"delta":{$fields,"content":null}}]}
+
+data: {"choices":[{"delta":{${fields.replace("Think", " carefully")},"content":"Answer"}}]}
+
+data: {"choices":[{"delta":{},"finish_reason":"stop"}]}
+
+data: {"choices":[],"usage":{"prompt_tokens":3,"completion_tokens":5,"completion_tokens_details":{"reasoning_tokens":2}}}
+
+data: [DONE]
+
+""",
+            ).build(),
+        )
+
+        val events = PolyglotClient(listOf(provider)).stream(
+            ChatRequest(ModelTarget(providerId, "reasoning-model"), listOf(Message.user("hi"))),
+        ).toList()
+
+        assertEquals(listOf("Think", " carefully"), events.filterIsInstance<StreamEvent.ReasoningDelta>().map { it.text })
+        assertEquals(listOf("Answer"), events.filterIsInstance<StreamEvent.TextDelta>().map { it.text })
+        val response = assertIs<StreamEvent.Completed>(events.last()).response
+        assertEquals("Think carefully", response.reasoning)
+        assertEquals("Answer", response.text)
+        assertEquals(FinishReason.STOP, response.finishReason)
+        assertEquals(2, response.usage.reasoningTokens)
+    }
+
+    @ParameterizedTest
+    @MethodSource("reasoningFields")
+    fun `maps reasoning aliases in complete responses`(fields: String) = runTest {
+        server.enqueue(
+            MockResponse.Builder().body(
+                """{"choices":[{"message":{$fields,"content":"Answer"},"finish_reason":"stop"}]}""",
+            ).build(),
+        )
+
+        val response = PolyglotClient(listOf(provider)).complete(
+            ChatRequest(ModelTarget(providerId, "reasoning-model"), listOf(Message.user("hi"))),
+        )
+
+        assertEquals("Think", response.reasoning)
+        assertEquals("Answer", response.text)
+    }
+
+    companion object {
+        @JvmStatic
+        fun reasoningFields() = listOf(
+            """"reasoning":"Think"""",
+            """"reasoning_content":"Think"""",
+            """"reasoning":"Think","reasoning_content":"legacy value"""",
+            """"reasoning":null,"reasoning_content":"Think"""",
+            """"reasoning":"Think","reasoning_content":null""",
+        )
     }
 }
