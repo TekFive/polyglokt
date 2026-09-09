@@ -1,6 +1,9 @@
 package org.tekfive.polyglot.anthropic
 
 import com.anthropic.client.AnthropicClient
+import com.anthropic.client.AnthropicClientImpl
+import com.anthropic.backends.AnthropicBackend
+import com.anthropic.core.ClientOptions
 import com.anthropic.client.okhttp.AnthropicOkHttpClient
 import com.anthropic.core.JsonValue
 import com.anthropic.errors.AnthropicException
@@ -50,11 +53,13 @@ import org.tekfive.polyglot.ResponseFormat
 import org.tekfive.polyglot.StreamEvent
 import org.tekfive.polyglot.ToolChoice
 import org.tekfive.polyglot.Usage
+import okhttp3.OkHttpClient
 
 class AnthropicConfig(
     internal val apiKey: String,
     internal val baseUrl: String? = null,
     internal val maxRetries: Int = 2,
+    internal val httpClient: OkHttpClient? = null,
 ) {
     init {
         require(apiKey.isNotBlank()) { "apiKey must not be blank" }
@@ -67,13 +72,7 @@ class AnthropicConfig(
 class AnthropicProvider private constructor(
     private val client: AnthropicClient,
 ) : ChatProvider, AutoCloseable {
-    constructor(config: AnthropicConfig) : this(
-        AnthropicOkHttpClient.builder()
-            .apiKey(config.apiKey)
-            .maxRetries(config.maxRetries)
-            .apply { config.baseUrl?.let(::baseUrl) }
-            .build(),
-    )
+    constructor(config: AnthropicConfig) : this(createClient(config))
 
     override val id = ID
     override val capabilities = CAPABILITIES
@@ -252,6 +251,28 @@ class AnthropicProvider private constructor(
     }
 
     companion object {
+        private fun createClient(config: AnthropicConfig): AnthropicClient {
+            val httpClient = config.httpClient
+            if (httpClient == null) {
+                return AnthropicOkHttpClient.builder()
+                    .apiKey(config.apiKey)
+                    .maxRetries(config.maxRetries)
+                    .apply { config.baseUrl?.let(::baseUrl) }
+                    .build()
+            }
+
+            // Keep SDK request mapping and retries while preserving the caller's TLS policy.
+            val backend = AnthropicBackend.builder().apiKey(config.apiKey)
+                .apply { config.baseUrl?.let(::baseUrl) }.build()
+            return AnthropicClientImpl(
+                ClientOptions.builder()
+                    .baseUrl(backend.baseUrl())
+                    .maxRetries(config.maxRetries)
+                    .httpClient(AnthropicTransport(httpClient, backend))
+                    .build(),
+            )
+        }
+
         val ID = ProviderId("anthropic")
         val CAPABILITIES = setOf(
             Capability.CHAT,

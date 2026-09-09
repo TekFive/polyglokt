@@ -12,7 +12,7 @@ val jitPackGroup = if (isJitPackBuild) {
 }
 val jitPackVersion = providers.environmentVariable("VERSION").orNull.takeIf { isJitPackBuild }
 val publicationGroup = providers.gradleProperty("group").orElse(jitPackGroup ?: "org.tekfive.polyglotkt").get()
-val publicationVersion = providers.gradleProperty("version").orElse(jitPackVersion ?: "1.0.2").get()
+val publicationVersion = providers.gradleProperty("version").orElse(jitPackVersion ?: "1.0.3").get()
 
 allprojects {
     group = publicationGroup

@@ -37,14 +37,14 @@ repositories {
 }
 
 dependencies {
-    implementation("org.tekfive.polyglotkt:polyglotkt-core:1.0.2")
-    implementation("org.tekfive.polyglotkt:polyglotkt-openai:1.0.2")
+    implementation("org.tekfive.polyglotkt:polyglotkt-core:1.0.3")
+    implementation("org.tekfive.polyglotkt:polyglotkt-openai:1.0.3")
     // Add only what you use:
-    // implementation("org.tekfive.polyglotkt:polyglotkt-anthropic:1.0.2")
-    // implementation("org.tekfive.polyglotkt:polyglotkt-gemini:1.0.2")
-    // implementation("org.tekfive.polyglotkt:polyglotkt-bedrock:1.0.2")
-    // implementation("org.tekfive.polyglotkt:polyglotkt-grok:1.0.2")
-    // implementation("org.tekfive.polyglotkt:polyglotkt-openai-compatible:1.0.2")
+    // implementation("org.tekfive.polyglotkt:polyglotkt-anthropic:1.0.3")
+    // implementation("org.tekfive.polyglotkt:polyglotkt-gemini:1.0.3")
+    // implementation("org.tekfive.polyglotkt:polyglotkt-bedrock:1.0.3")
+    // implementation("org.tekfive.polyglotkt:polyglotkt-grok:1.0.3")
+    // implementation("org.tekfive.polyglotkt:polyglotkt-openai-compatible:1.0.3")
 }
 ```
 
@@ -59,7 +59,7 @@ repositories {
 }
 
 dependencies {
-    val polyglotKtVersion = "v1.0.2" // release tag or commit hash
+    val polyglotKtVersion = "v1.0.3" // release tag or commit hash
     implementation("com.github.TekFive.polyglotkt:polyglotkt-core:$polyglotKtVersion")
     implementation("com.github.TekFive.polyglotkt:polyglotkt-grok:$polyglotKtVersion")
 }
@@ -89,6 +89,29 @@ openAi.close()
 ```
 
 Provider adapters are `AutoCloseable`; close them when your application shuts down.
+
+### Custom TLS and endpoints
+
+`AnthropicConfig` and `GeminiConfig` accept an optional `httpClient: OkHttpClient`
+and `baseUrl`. Supply a configured client to use a private CA, certificate pins,
+connection/read timeouts, or a private gateway. Without a custom client, each SDK
+keeps its defaults. Gemini uses the same client for chat, streaming, and embeddings.
+
+Configure the client's `sslSocketFactory` with your CA trust manager and add
+`certificatePinner` for public-key restrictions. Keep hostname verification enabled.
+Disable `followRedirects` and `followSslRedirects` when trust and credentials must
+remain scoped to the configured endpoint. Use HTTPS for that endpoint.
+
+```kotlin
+val anthropic = AnthropicProvider(
+    AnthropicConfig(apiKey = apiKey, baseUrl = gatewayUrl, httpClient = tlsClient),
+)
+// GeminiConfig(apiKey = apiKey, baseUrl = gatewayUrl, httpClient = tlsClient)
+```
+
+Use a separate HTTP client for each provider. Closing the provider closes its supplied
+client's connection pool, dispatcher, and cache. The caller defines CA trust and pins;
+PolyglotKt preserves that policy and does not change the JVM trust store.
 
 ### Streaming
 

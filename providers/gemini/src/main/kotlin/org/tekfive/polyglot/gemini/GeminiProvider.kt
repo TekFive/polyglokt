@@ -4,6 +4,8 @@ import com.google.genai.Client
 import com.google.genai.errors.ApiException
 import com.google.genai.types.Blob
 import com.google.genai.types.Content
+import com.google.genai.types.ClientOptions
+import com.google.genai.types.HttpOptions
 import com.google.genai.types.EmbedContentConfig
 import com.google.genai.types.FunctionCallingConfig
 import com.google.genai.types.FunctionDeclaration
@@ -48,12 +50,15 @@ import org.tekfive.polyglot.StreamEvent
 import org.tekfive.polyglot.ToolChoice
 import org.tekfive.polyglot.Usage
 import java.util.Base64
+import okhttp3.OkHttpClient
 
 class GeminiConfig(
     internal val apiKey: String? = null,
     internal val vertexAi: Boolean = false,
     internal val project: String? = null,
     internal val location: String? = null,
+    internal val baseUrl: String? = null,
+    internal val httpClient: OkHttpClient? = null,
 ) {
     init {
         require(vertexAi || !apiKey.isNullOrBlank()) { "apiKey is required unless Vertex AI is enabled" }
@@ -75,6 +80,8 @@ class GeminiProvider private constructor(
                 config.apiKey?.let(::apiKey)
                 config.project?.let(::project)
                 config.location?.let(::location)
+                config.baseUrl?.let { httpOptions(HttpOptions.builder().baseUrl(it).build()) }
+                config.httpClient?.let { clientOptions(ClientOptions.builder().customHttpClient(it).build()) }
             }
             .build(),
     )
