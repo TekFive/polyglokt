@@ -33,6 +33,11 @@ enum class Capability {
     AUDIO_INPUT,
     EMBEDDINGS,
     BATCH,
+    PROMPT_CACHING,
+    CACHE_KEY,
+    CACHE_TTL,
+    CACHE_BREAKPOINTS,
+    CACHED_CONTENT,
 }
 
 enum class MessageRole {
@@ -157,9 +162,14 @@ data class ChatRequest(
     val toolChoice: ToolChoice? = null,
     val responseFormat: ResponseFormat = ResponseFormat.Text,
     val providerOptions: JsonObject = JsonObject(emptyMap()),
+    val caching: PromptCaching? = null,
 ) {
     init {
         require(messages.isNotEmpty()) { "Messages must not be empty" }
+        caching?.cachedContent?.let {
+            require(it.target == target) { "Cached content belongs to a different target" }
+            require(fallbackTargets.isEmpty()) { "Stored content requests cannot use fallback targets" }
+        }
         require(tools.map { it.name }.toSet().size == tools.size) { "Tool names must be unique" }
         if (toolChoice is ToolChoice.Named) {
             require(tools.any { it.name == toolChoice.name }) { "Named tool choice must refer to a declared tool" }
@@ -170,9 +180,12 @@ data class ChatRequest(
 }
 
 data class Usage(
+    /** Total input, including cache reads and writes. Cache counters are subsets of this value. */
     val inputTokens: Long? = null,
     val outputTokens: Long? = null,
     val reasoningTokens: Long? = null,
+    val cacheReadInputTokens: Long? = null,
+    val cacheWriteInputTokens: Long? = null,
 ) {
     val totalTokens: Long?
         get() = if (inputTokens != null && outputTokens != null) inputTokens + outputTokens else null

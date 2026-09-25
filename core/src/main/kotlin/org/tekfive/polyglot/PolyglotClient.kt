@@ -90,14 +90,30 @@ class PolyglotClient(
 
     fun provider(id: ProviderId): ModelProvider = providerById[id] ?: throw ProviderNotRegisteredException(id)
 
+    suspend fun createCachedContent(request: CreateCachedContentRequest): CachedContentHandle =
+        cacheProvider(request.target.provider).createCachedContent(request)
+
+    suspend fun getCachedContent(handle: CachedContentHandle): CachedContentHandle =
+        cacheProvider(handle.target.provider).getCachedContent(handle)
+
+    suspend fun updateCachedContent(handle: CachedContentHandle, ttl: java.time.Duration): CachedContentHandle =
+        cacheProvider(handle.target.provider).updateCachedContent(handle, ttl)
+
+    suspend fun deleteCachedContent(handle: CachedContentHandle) =
+        cacheProvider(handle.target.provider).deleteCachedContent(handle)
+
+    private fun cacheProvider(id: ProviderId): CachedContentProvider = provider(id) as? CachedContentProvider
+        ?: throw UnsupportedCapabilityException(id, Capability.CACHED_CONTENT)
+
     private fun chatProvider(id: ProviderId): ChatProvider = provider(id) as? ChatProvider
         ?: throw UnsupportedCapabilityException(id, Capability.CHAT)
 
     private fun requireCapabilities(provider: ChatProvider, request: ChatRequest, streaming: Boolean = false) {
+        request.validateCaching(provider)
         val required = buildSet {
             add(Capability.CHAT)
             if (streaming) add(Capability.STREAMING)
-            if (request.tools.isNotEmpty()) {
+            if (request.tools.isNotEmpty() || request.caching?.cachedContent?.toolNames?.isNotEmpty() == true) {
                 add(Capability.TOOLS)
                 if (streaming) add(Capability.STREAMING_TOOL_CALLS)
             }

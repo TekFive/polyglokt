@@ -9,6 +9,8 @@ import com.anthropic.core.JsonValue
 import com.anthropic.errors.AnthropicException
 import com.anthropic.errors.AnthropicServiceException
 import com.anthropic.helpers.MessageAccumulator
+import com.anthropic.models.messages.CacheControlEphemeral
+import com.anthropic.models.messages.TextBlockParam
 import com.anthropic.models.messages.ContentBlockParam
 import com.anthropic.models.messages.JsonOutputFormat
 import com.anthropic.models.messages.Message
@@ -52,6 +54,8 @@ import org.tekfive.polyglot.ReasoningEffort
 import org.tekfive.polyglot.ResponseFormat
 import org.tekfive.polyglot.StreamEvent
 import org.tekfive.polyglot.ToolChoice
+import org.tekfive.polyglot.validateCaching
+import java.time.Duration
 import org.tekfive.polyglot.Usage
 import okhttp3.OkHttpClient
 
@@ -117,21 +121,50 @@ class AnthropicProvider private constructor(
 
     @Suppress("DEPRECATION")
     private fun ChatRequest.toSdk(): MessageCreateParams {
+        validateCaching(this@AnthropicProvider)
+        val cacheControl = caching?.let { cache ->
+            require(cache.ttl == null || cache.ttl in setOf(Duration.ofMinutes(5), Duration.ofHours(1))) { "Anthropic cache TTL must be 5 minutes or 1 hour" }
+            CacheControlEphemeral.builder().apply {
+                cache.ttl?.let { ttl(CacheControlEphemeral.Ttl.of(if (it == Duration.ofHours(1)) "1h" else "5m")) }
+            }.build()
+        }
         val builder = MessageCreateParams.builder()
             .model(target.model)
             .maxTokens((options.maxOutputTokens ?: 4096).toLong())
 
-        messages.filter { it.role == MessageRole.SYSTEM }
-            .joinToString("\n\n") { it.text }
-            .takeIf { it.isNotBlank() }
-            ?.let(builder::system)
+        if (caching?.messageBreakpoints?.isNotEmpty() == true) {
+            val systemBlocks = messages.mapIndexedNotNull { index, message ->
+                if (message.role != MessageRole.SYSTEM) null else TextBlockParam.builder().text(message.text).apply {
+                    if (index in caching?.messageBreakpoints.orEmpty()) {
+                        require(message.text.isNotBlank()) { "Cannot cache an empty system message" }
+                        cacheControl(cacheControl!!)
+                    }
+                }.build()
+            }
+            if (systemBlocks.isNotEmpty()) builder.systemOfTextBlockParams(systemBlocks)
+        } else {
+            messages.filter { it.role == MessageRole.SYSTEM }.joinToString("\n\n") { it.text }
+                .takeIf { it.isNotBlank() }?.let(builder::system)
+            if (cacheControl != null) builder.putAdditionalBodyProperty("cache_control", JsonValue.from(buildMap {
+                put("type", "ephemeral")
+                caching?.ttl?.let { put("ttl", if (it == Duration.ofHours(1)) "1h" else "5m") }
+            }))
+        }
 
-        messages.filter { it.role != MessageRole.SYSTEM }.forEach { message ->
-            val blocks = message.content.map { part ->
+        messages.forEachIndexed { index, message ->
+            if (message.role == MessageRole.SYSTEM) return@forEachIndexed
+            val blocks = message.content.mapIndexed { partIndex, part ->
+                val cached = index in caching?.messageBreakpoints.orEmpty() && partIndex == message.content.lastIndex
                 when (part) {
-                    is ContentPart.Text -> ContentBlockParam.ofText(part.text)
+                    is ContentPart.Text -> ContentBlockParam.ofText(TextBlockParam.builder().text(part.text).apply {
+                        if (cached) {
+                            require(part.text.isNotBlank()) { "Cannot cache an empty text block" }
+                            cacheControl(cacheControl!!)
+                        }
+                    }.build())
                     is ContentPart.ToolCall -> ContentBlockParam.ofToolUse(
                         ToolUseBlockParam.builder()
+                            .apply { if (cached) cacheControl(cacheControl!!) }
                             .id(part.id)
                             .name(part.name)
                             .input(
@@ -143,6 +176,7 @@ class AnthropicProvider private constructor(
                     )
                     is ContentPart.ToolResult -> ContentBlockParam.ofToolResult(
                         ToolResultBlockParam.builder()
+                            .apply { if (cached) cacheControl(cacheControl!!) }
                             .toolUseId(part.callId)
                             .content(part.result.toString())
                             .isError(part.isError)
@@ -218,7 +252,12 @@ class AnthropicProvider private constructor(
         return ChatResponse(
             request.target,
             content,
-            Usage(usage().inputTokens(), usage().outputTokens()),
+            Usage(
+                inputTokens = usage().inputTokens() + usage().cacheReadInputTokens().orElse(0L) + usage().cacheCreationInputTokens().orElse(0L),
+                outputTokens = usage().outputTokens(),
+                cacheReadInputTokens = usage().cacheReadInputTokens().orElse(null),
+                cacheWriteInputTokens = usage().cacheCreationInputTokens().orElse(null),
+            ),
             stopReason().orElse(null)?.asString().toFinishReason(),
             if (request.responseFormat is ResponseFormat.JsonSchema && text.isNotBlank()) {
                 runCatching { JSON.parseToJsonElement(text) }.getOrNull()
@@ -275,6 +314,9 @@ class AnthropicProvider private constructor(
 
         val ID = ProviderId("anthropic")
         val CAPABILITIES = setOf(
+            Capability.PROMPT_CACHING,
+            Capability.CACHE_TTL,
+            Capability.CACHE_BREAKPOINTS,
             Capability.CHAT,
             Capability.STREAMING,
             Capability.STREAMING_TOOL_CALLS,

@@ -10,6 +10,10 @@ import com.openai.models.FunctionParameters
 import com.openai.models.ReasoningEffort as OpenAiReasoningEffort
 import com.openai.models.ResponseFormatJsonSchema
 import com.openai.models.chat.completions.ChatCompletion
+import com.openai.models.chat.completions.ChatCompletionContentPart
+import com.openai.models.chat.completions.ChatCompletionContentPartText
+import com.openai.models.chat.completions.ChatCompletionSystemMessageParam
+import com.openai.models.chat.completions.ChatCompletionUserMessageParam
 import com.openai.models.chat.completions.ChatCompletionAssistantMessageParam
 import com.openai.models.chat.completions.ChatCompletionCreateParams
 import com.openai.models.chat.completions.ChatCompletionMessageFunctionToolCall
@@ -52,6 +56,8 @@ import org.tekfive.polyglot.ResponseFormat
 import org.tekfive.polyglot.StreamEvent
 import org.tekfive.polyglot.ToolChoice
 import org.tekfive.polyglot.Usage
+import org.tekfive.polyglot.validateCaching
+import java.time.Duration
 
 class OpenAiConfig(
     internal val apiKey: String,
@@ -156,27 +162,49 @@ class OpenAiProvider private constructor(
     override fun close() = client.close()
 
     private fun ChatRequest.toSdk(): ChatCompletionCreateParams {
+        validateCaching(this@OpenAiProvider)
         val builder = ChatCompletionCreateParams.builder().model(target.model)
-        messages.forEach { message ->
+        caching?.let { cache ->
+            cache.key?.let { builder.putAdditionalBodyProperty("prompt_cache_key", JsonValue.from(it)) }
+            require(cache.ttl == null || cache.ttl == Duration.ofMinutes(30)) { "OpenAI cache TTL must be 30 minutes; legacy retention is available via providerOptions without typed caching" }
+            if (cache.ttl != null || cache.messageBreakpoints.isNotEmpty()) {
+                builder.putAdditionalBodyProperty("prompt_cache_options", JsonValue.from(buildMap {
+                    put("mode", if (cache.messageBreakpoints.isEmpty()) "implicit" else "explicit")
+                    cache.ttl?.let { put("ttl", "30m") }
+                }))
+            }
+        }
+        messages.forEachIndexed { index, message ->
+            val cached = index in caching?.messageBreakpoints.orEmpty()
+            require(!cached || message.content.none { it is ContentPart.ToolCall }) { "OpenAI cache breakpoints require a content block, not a tool call" }
             when (message.role) {
-                MessageRole.SYSTEM -> builder.addSystemMessage(message.textOnly())
-                MessageRole.USER -> builder.addUserMessage(message.textOnly())
+                MessageRole.SYSTEM -> if (cached) builder.addMessage(
+                    ChatCompletionSystemMessageParam.builder().contentOfArrayOfContentParts(listOf(cachedText(message.textOnly()))).build(),
+                ) else builder.addSystemMessage(message.textOnly())
+                MessageRole.USER -> if (cached) builder.addMessage(
+                    ChatCompletionUserMessageParam.builder().contentOfArrayOfContentParts(listOf(ChatCompletionContentPart.ofText(cachedText(message.textOnly())))).build(),
+                ) else builder.addUserMessage(message.textOnly())
                 MessageRole.ASSISTANT -> {
                     val sdkMessage = ChatCompletionAssistantMessageParam.builder()
-                    message.text.takeIf { it.isNotEmpty() }?.let(sdkMessage::content)
+                    if (cached) sdkMessage.contentOfArrayOfContentParts(listOf(
+                        ChatCompletionAssistantMessageParam.Content.ChatCompletionRequestAssistantMessageContentPart.ofText(cachedText(message.text)),
+                    )) else message.text.takeIf { it.isNotEmpty() }?.let(sdkMessage::content)
                     message.content.filterIsInstance<ContentPart.ToolCall>().forEach {
                         sdkMessage.addToolCall(it.toSdk())
                     }
                     builder.addMessage(sdkMessage.build())
                 }
-                MessageRole.TOOL -> message.content.filterIsInstance<ContentPart.ToolResult>().forEach {
+                MessageRole.TOOL -> message.content.filterIsInstance<ContentPart.ToolResult>().let { results -> results.forEachIndexed { resultIndex, result ->
                     builder.addMessage(
                         ChatCompletionToolMessageParam.builder()
-                            .toolCallId(it.callId)
-                            .content(it.result.toString())
+                            .toolCallId(result.callId)
+                            .apply {
+                                if (cached && resultIndex == results.lastIndex) contentOfArrayOfContentParts(listOf(cachedText(result.result.toString())))
+                                else content(result.result.toString())
+                            }
                             .build(),
                     )
-                }
+                } }
             }
         }
         options.temperature?.let(builder::temperature)
@@ -318,6 +346,10 @@ class OpenAiProvider private constructor(
     companion object {
         val ID = ProviderId("openai")
         val CAPABILITIES = setOf(
+            Capability.PROMPT_CACHING,
+            Capability.CACHE_KEY,
+            Capability.CACHE_TTL,
+            Capability.CACHE_BREAKPOINTS,
             Capability.CHAT,
             Capability.STREAMING,
             Capability.STREAMING_TOOL_CALLS,
@@ -334,6 +366,7 @@ private fun com.openai.models.completions.CompletionUsage.toUsage() = Usage(
     promptTokens(),
     completionTokens(),
     completionTokensDetails().orElse(null)?.reasoningTokens()?.orElse(null),
+    cacheReadInputTokens = promptTokensDetails().orElse(null)?.cachedTokens()?.orElse(null),
 )
 
 private fun String.toFinishReason() = when (this) {
@@ -349,4 +382,10 @@ private fun JsonElement.toAny(): Any? = when (this) {
     is JsonObject -> mapValues { it.value.toAny() }
     is JsonArray -> map { it.toAny() }
     is JsonPrimitive -> booleanOrNull ?: longOrNull ?: doubleOrNull ?: contentOrNull
+}
+
+private fun cachedText(text: String): ChatCompletionContentPartText {
+    require(text.isNotBlank()) { "Cache breakpoints require nonempty text" }
+    return ChatCompletionContentPartText.builder().text(text)
+        .putAdditionalProperty("prompt_cache_breakpoint", JsonValue.from(mapOf("mode" to "explicit"))).build()
 }

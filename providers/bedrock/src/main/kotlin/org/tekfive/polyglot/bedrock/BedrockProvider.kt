@@ -3,6 +3,9 @@ package org.tekfive.polyglot.bedrock
 import aws.sdk.kotlin.services.bedrockruntime.BedrockRuntimeClient
 import aws.sdk.kotlin.services.bedrockruntime.model.AnyToolChoice
 import aws.sdk.kotlin.services.bedrockruntime.model.AutoToolChoice
+import aws.sdk.kotlin.services.bedrockruntime.model.CachePointBlock
+import aws.sdk.kotlin.services.bedrockruntime.model.CachePointType
+import aws.sdk.kotlin.services.bedrockruntime.model.CacheTtl
 import aws.sdk.kotlin.services.bedrockruntime.model.ContentBlock
 import aws.sdk.kotlin.services.bedrockruntime.model.ConversationRole
 import aws.sdk.kotlin.services.bedrockruntime.model.ConverseRequest
@@ -50,6 +53,8 @@ import org.tekfive.polyglot.ProviderException
 import org.tekfive.polyglot.ProviderId
 import org.tekfive.polyglot.StreamEvent
 import org.tekfive.polyglot.ToolChoice
+import org.tekfive.polyglot.validateCaching
+import java.time.Duration
 import org.tekfive.polyglot.Usage
 
 class BedrockConfig(
@@ -111,7 +116,7 @@ class BedrockProvider private constructor(
                     }
                     event.asMessageStopOrNull()?.let { finishReason = it.stopReason.value.toFinishReason() }
                     event.asMetadataOrNull()?.usage?.let {
-                        usage = Usage(it.inputTokens.toLong(), it.outputTokens.toLong())
+                        usage = it.toUsage()
                     }
                 }
             }
@@ -138,44 +143,62 @@ class BedrockProvider private constructor(
 
     override fun close() = client.close()
 
-    private fun ChatRequest.toSdk() = ConverseRequest {
-        modelId = target.model
-        system = this@toSdk.messages.filter { it.role == MessageRole.SYSTEM }
-            .map { SystemContentBlock.Text(it.text) }
-        this.messages = this@toSdk.messages.filter { it.role != MessageRole.SYSTEM }.map { message ->
-            Message {
-                role = if (message.role == MessageRole.ASSISTANT) ConversationRole.Assistant else ConversationRole.User
-                content = message.content.map { it.toSdk() }
+    internal fun ChatRequest.toSdk(): ConverseRequest {
+        validateCaching(this@BedrockProvider)
+        val cachePoint = caching?.let { cache ->
+            require(cache.ttl == null || cache.ttl in setOf(Duration.ofMinutes(5), Duration.ofHours(1))) { "Bedrock cache TTL must be 5 minutes or 1 hour" }
+            CachePointBlock {
+                type = CachePointType.Default
+                cache.ttl?.let { ttl = CacheTtl.fromValue(if (it == Duration.ofHours(1)) "1h" else "5m") }
             }
         }
-        inferenceConfig = InferenceConfiguration {
-            maxTokens = options.maxOutputTokens
-            temperature = options.temperature?.toFloat()
-            topP = options.topP?.toFloat()
-            stopSequences = options.stopSequences
-        }
-        if (tools.isNotEmpty()) toolConfig = ToolConfiguration {
-            this.tools = this@toSdk.tools.map { definition ->
-                Tool.ToolSpec(
-                    ToolSpecification {
-                        name = definition.name
-                        description = definition.description
-                        strict = true
-                        inputSchema = ToolInputSchema.Json(definition.inputSchema.toDocument())
-                    },
-                )
+        val breakpoints = caching?.messageBreakpoints?.takeIf { it.isNotEmpty() }
+            ?: if (caching != null) setOf(messages.lastIndex) else emptySet()
+        return ConverseRequest {
+            modelId = target.model
+            system = this@toSdk.messages.flatMapIndexed { index, message ->
+                if (message.role != MessageRole.SYSTEM) emptyList() else buildList {
+                    add(SystemContentBlock.Text(message.text))
+                    if (index in breakpoints) add(SystemContentBlock.CachePoint(cachePoint!!))
+                }
             }
-            toolChoice = when (val choice = this@toSdk.toolChoice) {
-                null, ToolChoice.Auto -> BedrockToolChoice.Auto(AutoToolChoice {})
-                ToolChoice.Required -> BedrockToolChoice.Any(AnyToolChoice {})
-                ToolChoice.None -> error("Bedrock Converse does not define a portable 'none' tool choice")
-                is ToolChoice.Named -> BedrockToolChoice.Tool(SpecificToolChoice { name = choice.name })
+            this.messages = this@toSdk.messages.mapIndexedNotNull { index, message ->
+                if (message.role == MessageRole.SYSTEM) return@mapIndexedNotNull null
+                Message {
+                    role = if (message.role == MessageRole.ASSISTANT) ConversationRole.Assistant else ConversationRole.User
+                    content = message.content.map { it.toSdk() } +
+                        if (index in breakpoints) listOf(ContentBlock.CachePoint(cachePoint!!)) else emptyList()
+                }
             }
+            inferenceConfig = InferenceConfiguration {
+                maxTokens = options.maxOutputTokens
+                temperature = options.temperature?.toFloat()
+                topP = options.topP?.toFloat()
+                stopSequences = options.stopSequences
+            }
+            if (tools.isNotEmpty()) toolConfig = ToolConfiguration {
+                this.tools = this@toSdk.tools.map { definition ->
+                    Tool.ToolSpec(
+                        ToolSpecification {
+                            name = definition.name
+                            description = definition.description
+                            strict = true
+                            inputSchema = ToolInputSchema.Json(definition.inputSchema.toDocument())
+                        },
+                    )
+                }
+                toolChoice = when (val choice = this@toSdk.toolChoice) {
+                    null, ToolChoice.Auto -> BedrockToolChoice.Auto(AutoToolChoice {})
+                    ToolChoice.Required -> BedrockToolChoice.Any(AnyToolChoice {})
+                    ToolChoice.None -> error("Bedrock Converse does not define a portable 'none' tool choice")
+                    is ToolChoice.Named -> BedrockToolChoice.Tool(SpecificToolChoice { name = choice.name })
+                }
+            }
+            if (providerOptions.isNotEmpty()) additionalModelRequestFields = providerOptions.toDocument()
         }
-        if (providerOptions.isNotEmpty()) additionalModelRequestFields = providerOptions.toDocument()
     }
 
-    private fun ChatRequest.toStreamSdk(): ConverseStreamRequest {
+    internal fun ChatRequest.toStreamSdk(): ConverseStreamRequest {
         val request = toSdk()
         return ConverseStreamRequest {
             modelId = request.modelId
@@ -225,7 +248,7 @@ class BedrockProvider private constructor(
         return ChatResponse(
             request.target,
             content,
-            usage?.let { Usage(it.inputTokens.toLong(), it.outputTokens.toLong()) } ?: Usage(),
+            usage?.let { it.toUsage() } ?: Usage(),
             stopReason.value.toFinishReason(),
             reasoning = reasoning.takeIf { it.isNotEmpty() },
         )
@@ -272,6 +295,9 @@ class BedrockProvider private constructor(
     companion object {
         val ID = ProviderId("bedrock")
         val CAPABILITIES = setOf(
+            Capability.PROMPT_CACHING,
+            Capability.CACHE_TTL,
+            Capability.CACHE_BREAKPOINTS,
             Capability.CHAT,
             Capability.STREAMING,
             Capability.STREAMING_TOOL_CALLS,
@@ -306,3 +332,10 @@ private fun Document.toJsonElement(): JsonElement = when {
     asDoubleOrNull() != null -> JsonPrimitive(asDouble())
     else -> JsonPrimitive(asStringOrNull().orEmpty())
 }
+
+internal fun aws.sdk.kotlin.services.bedrockruntime.model.TokenUsage.toUsage() = Usage(
+    inputTokens = inputTokens.toLong() + (cacheReadInputTokens ?: 0) + (cacheWriteInputTokens ?: 0),
+    outputTokens = outputTokens.toLong(),
+    cacheReadInputTokens = cacheReadInputTokens?.toLong(),
+    cacheWriteInputTokens = cacheWriteInputTokens?.toLong(),
+)

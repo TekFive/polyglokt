@@ -37,14 +37,14 @@ repositories {
 }
 
 dependencies {
-    implementation("org.tekfive.polyglotkt:polyglotkt-core:1.0.3")
-    implementation("org.tekfive.polyglotkt:polyglotkt-openai:1.0.3")
+    implementation("org.tekfive.polyglotkt:polyglotkt-core:1.1.0")
+    implementation("org.tekfive.polyglotkt:polyglotkt-openai:1.1.0")
     // Add only what you use:
-    // implementation("org.tekfive.polyglotkt:polyglotkt-anthropic:1.0.3")
-    // implementation("org.tekfive.polyglotkt:polyglotkt-gemini:1.0.3")
-    // implementation("org.tekfive.polyglotkt:polyglotkt-bedrock:1.0.3")
-    // implementation("org.tekfive.polyglotkt:polyglotkt-grok:1.0.3")
-    // implementation("org.tekfive.polyglotkt:polyglotkt-openai-compatible:1.0.3")
+    // implementation("org.tekfive.polyglotkt:polyglotkt-anthropic:1.1.0")
+    // implementation("org.tekfive.polyglotkt:polyglotkt-gemini:1.1.0")
+    // implementation("org.tekfive.polyglotkt:polyglotkt-bedrock:1.1.0")
+    // implementation("org.tekfive.polyglotkt:polyglotkt-grok:1.1.0")
+    // implementation("org.tekfive.polyglotkt:polyglotkt-openai-compatible:1.1.0")
 }
 ```
 
@@ -59,7 +59,7 @@ repositories {
 }
 
 dependencies {
-    val polyglotKtVersion = "v1.0.3" // release tag or commit hash
+    val polyglotKtVersion = "v1.1.0" // release tag or commit hash
     implementation("com.github.TekFive.polyglotkt:polyglotkt-core:$polyglotKtVersion")
     implementation("com.github.TekFive.polyglotkt:polyglotkt-grok:$polyglotKtVersion")
 }
@@ -168,6 +168,109 @@ val request = ChatRequest(
 )
 ```
 
+### Prompt caching and reusable context
+
+Use the same `PromptCaching` options on a `ChatRequest` or a `Conversation`:
+
+```kotlin
+val conversation = Conversation(
+    client = client,
+    target = target,
+    systemMessage = referenceDocument,
+    caching = PromptCaching(),
+)
+val first = conversation.say("Summarize the document.")
+val second = conversation.say("Explain its second section.")
+println(second.usage.cacheReadInputTokens)
+```
+
+`PromptCaching()` selects the adapter's automatic caching behavior. Conversation
+still sends its full history; providers can reuse processing of an unchanged prefix.
+Keep shared instructions, documents, and tool definitions stable and put changing
+questions afterward. Omitting `caching` preserves provider defaults; it does not
+disable a provider's implicit caching. Caching is independent of OAuth credentials.
+
+| Adapter | Automatic prefix caching | Routing/accounting key | Explicit message breakpoints | Typed TTL | Stored content |
+| --- | --- | --- | --- | --- | --- |
+| OpenAI | Provider default | `key` | Supported models | 30 minutes on supported models | — |
+| Anthropic | Top-level `cache_control` | — | Yes | 5 minutes / 1 hour | — |
+| Gemini | Provider default | — | — | On stored-content creation/update | Create, inspect, extend, delete, reuse |
+| Bedrock Converse | Adds a checkpoint after the last message | — | Yes | 5 minutes / 1 hour on supported models | — |
+| Grok | Provider default | `key` → `x-grok-conv-id` | — | — | — |
+| OpenAI-compatible | Opt-in | Opt-in | Opt-in | Opt-in, OpenAI format | — |
+
+Capabilities describe adapter controls, not a guarantee that every model supports
+them or that a request will hit the cache. Model eligibility, minimum prefix size,
+expiry, pricing, and retention are enforced by the service. See the provider docs:
+[OpenAI](https://developers.openai.com/api/docs/guides/prompt-caching),
+[Anthropic](https://platform.claude.com/docs/en/build-with-claude/prompt-caching),
+[Gemini](https://ai.google.dev/gemini-api/docs/generate-content/caching),
+[Bedrock](https://docs.aws.amazon.com/bedrock/latest/userguide/prompt-caching.html),
+[Grok](https://docs.x.ai/developers/advanced-api-usage/prompt-caching/maximizing-cache-hits).
+
+For precise boundaries, set `PromptCaching(messageBreakpoints = setOf(0))` to mark
+the end of the first message, including a system message. Up to four message
+boundaries can be marked; each uses the same optional `ttl: java.time.Duration`.
+With `Conversation`, indices include its optional system message followed by history.
+OpenAI breakpoints require a supported content block and cannot mark a tool-call
+message. Anthropic and Bedrock render system messages before conversation messages;
+keep system instructions at the beginning. Markers cache the rendered prefix through
+that boundary, including preceding tool definitions where the provider supports it.
+
+`PromptCaching(key = "session-123")` is available for OpenAI and Grok. On Grok the
+per-request key overrides `GrokConfig.conversationId`. Keys do not represent stored
+conversation history. For OpenAI models using legacy retention controls, continue
+using `providerOptions` (for example `prompt_cache_retention`) without typed caching.
+Typed options and raw cache fields cannot be combined, avoiding conflicting settings.
+
+Generic compatible endpoints advertise no caching controls by default. Add
+`Capability.PROMPT_CACHING` to their configured `capabilities`, and add `CACHE_KEY`,
+`CACHE_TTL`, or `CACHE_BREAKPOINTS` only when the endpoint supports those OpenAI wire
+fields. Unsupported typed controls fail before I/O, including on direct adapter calls.
+
+For Gemini, store large context once and send its handle with subsequent questions:
+
+```kotlin
+val cache = client.createCachedContent(
+    CreateCachedContentRequest(
+        target = geminiTarget,
+        messages = listOf(Message.user(referenceDocument)),
+        ttl = java.time.Duration.ofHours(1),
+    ),
+)
+try {
+    val conversation = Conversation(
+        client = client,
+        target = geminiTarget,
+        caching = PromptCaching(cachedContent = cache),
+    )
+    conversation.say("Summarize the document.")
+    conversation.say("Explain its second section.")
+    val current = client.getCachedContent(cache)
+    val extended = client.updateCachedContent(current, java.time.Duration.ofHours(2))
+    println(extended.expiresAt)
+} finally {
+    client.deleteCachedContent(cache)
+}
+```
+
+Stored content can include system instructions and tools at creation. Do not resend
+those fields on requests using the handle. Handles retain declared tool names so
+`Conversation` can validate calls when a `toolExecutor` is supplied. Persist the full
+handle if resuming later, and reuse the same provider configuration/account and exact
+model. Stored-content requests reject fallback targets: a different provider or model
+would not have the cached context. Expired/deleted caches surface the provider error;
+the caller decides whether to recreate them. Stored caches are explicitly managed and
+are not deleted by closing the provider or clearing a conversation.
+
+`Usage.cacheReadInputTokens` and `cacheWriteInputTokens` report counters when supplied
+by the service, for both completed and streaming responses. `null` means unreported;
+zero means reported as zero. `inputTokens` includes cache reads and writes, so adding
+these counters to it would double-count. Anthropic and Bedrock totals are normalized
+from their separate uncached/read/write fields. OpenAI, Grok, compatible APIs, and
+Gemini use the provider's total input field; unreported cache-write counts remain null.
+This corrects the previous Anthropic/Bedrock input totals for cached requests.
+
 ### OpenAI-compatible services
 
 Grok has a dedicated preset with xAI's endpoint, capabilities, and optional conversation-affinity header:
@@ -194,6 +297,66 @@ val deepSeek = OpenAiCompatibleProvider(
 The same adapter can target DeepSeek, Groq, OpenRouter, Together, Fireworks, Perplexity, or a local vLLM server. Override `capabilities` when an endpoint implements only a subset of the OpenAI format.
 
 For models that accept `xhigh`, use `GenerationOptions(reasoningEffort = ReasoningEffort.XHIGH)`. The OpenAI-compatible adapter sends this as `reasoning_effort: "xhigh"`. Supported effort levels depend on the target model; configure the adapter with `capabilities = OpenAiCompatibleProvider.DEFAULT_CAPABILITIES + Capability.REASONING` when the endpoint supports reasoning options.
+
+### OAuth bearer credentials
+
+`OpenAiCompatibleProvider` and `GrokConfig` accept an `AccessTokenProvider` in place
+of `apiKey`. The provider is called before each chat, embedding, or streaming request
+(once per stream collection). Return a valid access token without the `Bearer ` prefix.
+Existing API-key constructors remain available.
+
+If your OAuth client already caches and refreshes tokens, connect it directly:
+
+```kotlin
+val gateway = OpenAiCompatibleProvider(
+    id = ProviderId("gateway"),
+    baseUrl = "https://gateway.example.com/v1",
+    tokenProvider = AccessTokenProvider {
+        oauthClient.validAccessToken() // Your application's suspending OAuth integration.
+    },
+)
+```
+
+Otherwise, `RefreshingAccessTokenProvider` can cache the result of your token exchange:
+
+```kotlin
+val credentials = RefreshingAccessTokenProvider {
+    val result = oauthClient.acquireOrRefreshToken() // Application-provided integration.
+    AccessToken(value = result.accessToken, expiresAt = result.expiresAt)
+}
+
+val gateway = OpenAiCompatibleProvider(
+    id = ProviderId("gateway"),
+    baseUrl = "https://gateway.example.com/v1",
+    tokenProvider = credentials,
+)
+// GrokConfig(tokenProvider = credentials, baseUrl = yourCompatibleGatewayUrl)
+```
+
+The cache refreshes 60 seconds before expiry by default (`refreshSkew` is configurable)
+and coordinates concurrent requests so they share a successful refresh. Use a separate
+instance for each identity, audience, and set of scopes. The callback owns the token
+exchange, refresh-token rotation, and secure persistence. Failed refreshes propagate;
+expired tokens are never returned. A later request can try acquiring credentials again.
+
+This is support for consuming OAuth bearer tokens, not a browser-login or token-endpoint
+client. Your application must configure a supported OAuth flow and obtain tokens for
+the destination API. It does not enable ChatGPT or Claude subscription sign-in, and
+does not imply that xAI's public endpoint accepts OAuth tokens. The other provider
+adapters retain their existing authentication configuration.
+
+Credential acquisition failures become `ProviderErrorKind.AUTHENTICATION`; coroutine
+cancellation propagates unchanged. HTTP 401 responses are not automatically refreshed
+and replayed, and authentication failures do not trigger the default provider fallback.
+Custom token providers must handle concurrent calls. Tokens and cache objects redact
+their string representations; applications must also avoid logging token values or
+sensitive exceptions from their OAuth client.
+
+For both API-key and token-provider constructors, the compatible adapter rejects an
+`Authorization` entry in `extraHeaders` and disables HTTP redirects, including those
+enabled on a supplied OkHttp client. Configure the final HTTPS endpoint directly.
+Supplied TLS settings, timeouts, and connection pools are preserved; callers remain
+responsible for any custom interceptors or authenticators they install.
 
 ## API design
 

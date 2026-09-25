@@ -3,11 +3,13 @@ package org.tekfive.polyglot.grok
 import kotlinx.coroutines.test.runTest
 import mockwebserver3.MockResponse
 import mockwebserver3.MockWebServer
+import org.tekfive.polyglot.AccessTokenProvider
 import org.tekfive.polyglot.Capability
 import org.tekfive.polyglot.ChatRequest
 import org.tekfive.polyglot.GenerationOptions
 import org.tekfive.polyglot.Message
 import org.tekfive.polyglot.ModelTarget
+import org.tekfive.polyglot.PromptCaching
 import org.tekfive.polyglot.ReasoningEffort
 import kotlin.test.AfterTest
 import kotlin.test.BeforeTest
@@ -59,6 +61,33 @@ class GrokProviderTest {
         assertEquals("conversation-1", request.headers[GrokProvider.CONVERSATION_ID_HEADER])
         assertEquals("Bearer xai-secret", request.headers["Authorization"])
         assertTrue(assertNotNull(request.body).utf8().contains("\"reasoning_effort\":\"high\""))
+    }
+
+    @Test
+    fun `passes rotating tokens through to the compatible adapter`() = runTest {
+        var calls = 0
+        val provider = GrokProvider(
+            GrokConfig(
+                tokenProvider = AccessTokenProvider { "token-${++calls}" },
+                baseUrl = server.url("/").toString(),
+            ),
+        )
+        repeat(2) { index ->
+            server.enqueue(MockResponse.Builder().body("""{"choices":[{"message":{"content":"hello"}}]}""").build())
+            provider.complete(ChatRequest(ModelTarget(GrokProvider.ID, "model"), listOf(Message.user("hi"))))
+            assertEquals("Bearer token-${index + 1}", server.takeRequest().headers["Authorization"])
+        }
+    }
+
+    @Test
+    fun `per request cache key overrides configured affinity without OpenAI cache body fields`() = runTest {
+        server.enqueue(MockResponse.Builder().body("""{"choices":[{"message":{"content":"ok"}}],"usage":{"prompt_tokens":110,"completion_tokens":2,"prompt_tokens_details":{"cached_tokens":100}}}""").build())
+        val provider = GrokProvider(GrokConfig("secret", server.url("/").toString(), conversationId = "default"))
+        val result = provider.complete(ChatRequest(ModelTarget(GrokProvider.ID, "model"), listOf(Message.user("hi")), caching = PromptCaching(key = "session")))
+        val recorded = server.takeRequest()
+        assertEquals("session", recorded.headers[GrokProvider.CONVERSATION_ID_HEADER])
+        assertFalse(recorded.body!!.utf8().contains("prompt_cache"))
+        assertEquals(100, result.usage.cacheReadInputTokens)
     }
 
     @Test

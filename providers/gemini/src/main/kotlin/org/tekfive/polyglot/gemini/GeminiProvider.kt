@@ -48,6 +48,13 @@ import org.tekfive.polyglot.ReasoningEffort
 import org.tekfive.polyglot.ResponseFormat
 import org.tekfive.polyglot.StreamEvent
 import org.tekfive.polyglot.ToolChoice
+import org.tekfive.polyglot.CachedContentProvider
+import org.tekfive.polyglot.CachedContentHandle
+import org.tekfive.polyglot.CreateCachedContentRequest
+import org.tekfive.polyglot.validateCaching
+import com.google.genai.types.CreateCachedContentConfig
+import com.google.genai.types.UpdateCachedContentConfig
+import java.time.Duration
 import org.tekfive.polyglot.Usage
 import java.util.Base64
 import okhttp3.OkHttpClient
@@ -72,7 +79,7 @@ class GeminiConfig(
 
 class GeminiProvider private constructor(
     private val client: Client,
-) : ChatProvider, EmbeddingProvider, AutoCloseable {
+) : ChatProvider, EmbeddingProvider, CachedContentProvider, AutoCloseable {
     constructor(config: GeminiConfig) : this(
         Client.builder()
             .vertexAI(config.vertexAi)
@@ -90,7 +97,8 @@ class GeminiProvider private constructor(
     override val capabilities = CAPABILITIES
 
     override suspend fun complete(request: ChatRequest): ChatResponse = withContext(Dispatchers.IO) {
-        sdkCall { client.models.generateContent(request.target.model, request.toContents(), request.toConfig()) }
+        val config = request.toConfig()
+        sdkCall { client.models.generateContent(request.target.model, request.toContents(), config) }
             .toPolyglot(request)
     }
 
@@ -99,7 +107,8 @@ class GeminiProvider private constructor(
         val text = StringBuilder()
         var usage = Usage()
         var finishReason = FinishReason.UNKNOWN
-        sdkCall { client.models.generateContentStream(request.target.model, request.toContents(), request.toConfig()) }
+        val config = request.toConfig()
+        sdkCall { client.models.generateContentStream(request.target.model, request.toContents(), config) }
             .use { stream ->
                 for (chunk in stream) {
                     chunk.usageMetadata().orElse(null)?.let {
@@ -107,6 +116,7 @@ class GeminiProvider private constructor(
                             it.promptTokenCount().orElse(null)?.toLong(),
                             it.candidatesTokenCount().orElse(null)?.toLong(),
                             it.thoughtsTokenCount().orElse(null)?.toLong(),
+                            cacheReadInputTokens = it.cachedContentTokenCount().orElse(null)?.toLong(),
                         )
                     }
                     finishReason = chunk.finishReason().toString().toFinishReason()
@@ -144,6 +154,47 @@ class GeminiProvider private constructor(
         )
     }
 
+    override suspend fun createCachedContent(request: CreateCachedContentRequest): CachedContentHandle = withContext(Dispatchers.IO) {
+        require(request.target.provider == id) { "Cache target belongs to a different provider" }
+        val chat = ChatRequest(request.target, request.messages, tools = request.tools, toolChoice = request.toolChoice)
+        val generation = chat.toConfig()
+        val config = CreateCachedContentConfig.builder()
+            .contents(chat.toContents())
+            .apply {
+                generation.systemInstruction().ifPresent { systemInstruction(it) }
+                generation.tools().ifPresent { tools(it) }
+                generation.toolConfig().ifPresent { toolConfig(it) }
+                request.ttl?.let { ttl(it) }
+                request.displayName?.let { displayName(it) }
+            }.build()
+        sdkCall { client.caches.create(request.target.model, config) }.toHandle(request.target, request.tools.map { it.name }.toSet())
+    }
+
+    override suspend fun getCachedContent(handle: CachedContentHandle): CachedContentHandle = withContext(Dispatchers.IO) {
+        require(handle.target.provider == id) { "Cache belongs to a different provider" }
+        sdkCall { client.caches.get(handle.id, null) }.toHandle(handle.target, handle.toolNames)
+    }
+
+    override suspend fun updateCachedContent(handle: CachedContentHandle, ttl: Duration): CachedContentHandle = withContext(Dispatchers.IO) {
+        require(handle.target.provider == id) { "Cache belongs to a different provider" }
+        require(!ttl.isNegative && !ttl.isZero) { "Cache TTL must be positive" }
+        sdkCall { client.caches.update(handle.id, UpdateCachedContentConfig.builder().ttl(ttl).build()) }.toHandle(handle.target, handle.toolNames)
+    }
+
+    override suspend fun deleteCachedContent(handle: CachedContentHandle): Unit = withContext(Dispatchers.IO) {
+        require(handle.target.provider == id) { "Cache belongs to a different provider" }
+        sdkCall { client.caches.delete(handle.id, null) }
+        Unit
+    }
+
+    private fun com.google.genai.types.CachedContent.toHandle(target: org.tekfive.polyglot.ModelTarget, toolNames: Set<String>) = CachedContentHandle(
+        target = target,
+        id = name().orElseThrow { ProviderException(ID, ProviderErrorKind.INVALID_RESPONSE, "Gemini returned no cache ID") },
+        expiresAt = expireTime().orElse(null),
+        inputTokens = usageMetadata().orElse(null)?.totalTokenCount()?.orElse(null)?.toLong(),
+        toolNames = toolNames,
+    )
+
     override fun close() = client.close()
 
     private fun ChatRequest.toContents(): List<Content> = messages
@@ -172,8 +223,10 @@ class GeminiProvider private constructor(
     }
 
     private fun ChatRequest.toConfig(): GenerateContentConfig {
+        validateCaching(this@GeminiProvider)
         require(providerOptions.isEmpty()) { "Gemini providerOptions are not yet supported; use the typed request options" }
         val builder = GenerateContentConfig.builder()
+        caching?.cachedContent?.let { builder.cachedContent(it.id) }
         messages.filter { it.role == MessageRole.SYSTEM }
             .joinToString("\n\n") { it.text }
             .takeIf { it.isNotBlank() }
@@ -237,6 +290,7 @@ class GeminiProvider private constructor(
                 usage?.promptTokenCount()?.orElse(null)?.toLong(),
                 usage?.candidatesTokenCount()?.orElse(null)?.toLong(),
                 usage?.thoughtsTokenCount()?.orElse(null)?.toLong(),
+                cacheReadInputTokens = usage?.cachedContentTokenCount()?.orElse(null)?.toLong(),
             ),
             finishReason().toString().toFinishReason(),
             if (request.responseFormat is ResponseFormat.JsonSchema && text.isNotBlank()) {
@@ -274,6 +328,8 @@ class GeminiProvider private constructor(
     companion object {
         val ID = ProviderId("gemini")
         val CAPABILITIES = setOf(
+            Capability.PROMPT_CACHING,
+            Capability.CACHED_CONTENT,
             Capability.CHAT,
             Capability.STREAMING,
             Capability.STREAMING_TOOL_CALLS,

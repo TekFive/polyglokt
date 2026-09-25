@@ -24,6 +24,7 @@ class Conversation(
     private val toolChoice: ToolChoice? = null,
     private val toolExecutor: ToolExecutor? = null,
     private val maxToolRounds: Int = 8,
+    private val caching: PromptCaching? = null,
 ) {
     private val mutex = Mutex()
     private val history = mutableListOf<Message>()
@@ -53,7 +54,9 @@ class Conversation(
             }
 
             response.toolCalls.forEach { call ->
-                require(tools.any { it.name == call.name }) { "Model requested undeclared tool '${call.name}'" }
+                require(tools.any { it.name == call.name } || call.name in caching?.cachedContent?.toolNames.orEmpty()) {
+                    "Model requested undeclared tool '${call.name}'"
+                }
                 val result = toolExecutor.execute(call)
                 workingHistory += Message(
                     MessageRole.TOOL,
@@ -83,5 +86,6 @@ class Conversation(
         options = options,
         tools = tools,
         toolChoice = toolChoice,
+        caching = caching,
     )
 }

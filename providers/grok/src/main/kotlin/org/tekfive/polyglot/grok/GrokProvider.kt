@@ -1,6 +1,7 @@
 package org.tekfive.polyglot.grok
 
 import kotlinx.coroutines.flow.Flow
+import org.tekfive.polyglot.AccessTokenProvider
 import org.tekfive.polyglot.Capability
 import org.tekfive.polyglot.ChatProvider
 import org.tekfive.polyglot.ChatRequest
@@ -10,19 +11,27 @@ import org.tekfive.polyglot.StreamEvent
 import org.tekfive.polyglot.openaicompatible.OpenAiCompatibleProvider
 
 class GrokConfig(
-    internal val apiKey: String,
+    internal val tokenProvider: AccessTokenProvider,
     internal val baseUrl: String = GrokProvider.BASE_URL,
     internal val conversationId: String? = null,
     internal val extraHeaders: Map<String, String> = emptyMap(),
 ) {
-    init {
+    constructor(
+        apiKey: String,
+        baseUrl: String = GrokProvider.BASE_URL,
+        conversationId: String? = null,
+        extraHeaders: Map<String, String> = emptyMap(),
+    ) : this(AccessTokenProvider { apiKey }, baseUrl, conversationId, extraHeaders) {
         require(apiKey.isNotBlank()) { "apiKey must not be blank" }
+    }
+
+    init {
         require(baseUrl.isNotBlank()) { "baseUrl must not be blank" }
         conversationId?.let { require(it.isNotBlank()) { "conversationId must not be blank" } }
     }
 
     override fun toString() =
-        "GrokConfig(apiKey=<redacted>, baseUrl=$baseUrl, conversationId=$conversationId, extraHeaderNames=${extraHeaders.keys})"
+        "GrokConfig(credentials=<redacted>, baseUrl=$baseUrl, conversationId=$conversationId, extraHeaderNames=${extraHeaders.keys})"
 }
 
 /**
@@ -36,13 +45,14 @@ class GrokProvider(
 ) : ChatProvider {
     private val delegate = OpenAiCompatibleProvider(
         id = ID,
-        apiKey = config.apiKey,
+        tokenProvider = config.tokenProvider,
         baseUrl = config.baseUrl,
         extraHeaders = buildMap {
             putAll(config.extraHeaders)
             config.conversationId?.let { put(CONVERSATION_ID_HEADER, it) }
         },
         capabilities = CAPABILITIES,
+        cacheKeyHeader = CONVERSATION_ID_HEADER,
     )
 
     override val id = ID
@@ -58,6 +68,8 @@ class GrokProvider(
         const val CONVERSATION_ID_HEADER = "x-grok-conv-id"
 
         val CAPABILITIES = setOf(
+            Capability.PROMPT_CACHING,
+            Capability.CACHE_KEY,
             Capability.CHAT,
             Capability.STREAMING,
             Capability.STREAMING_TOOL_CALLS,

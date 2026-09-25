@@ -6,6 +6,8 @@ import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonArray
+import kotlinx.serialization.json.jsonPrimitive
 import mockwebserver3.MockResponse
 import mockwebserver3.MockWebServer
 import org.junit.jupiter.params.ParameterizedTest
@@ -19,6 +21,8 @@ import org.tekfive.polyglot.GenerationOptions
 import org.tekfive.polyglot.Message
 import org.tekfive.polyglot.ModelTarget
 import org.tekfive.polyglot.PolyglotClient
+import org.tekfive.polyglot.PromptCaching
+import org.tekfive.polyglot.UnsupportedCapabilityException
 import org.tekfive.polyglot.ProviderErrorKind
 import org.tekfive.polyglot.ProviderException
 import org.tekfive.polyglot.ProviderId
@@ -213,6 +217,40 @@ data: [DONE]
         val payload = Json.parseToJsonElement(server.takeRequest().body!!.utf8()).jsonObject
         assertEquals(JsonPrimitive("xhigh"), payload["reasoning_effort"])
         assertEquals(JsonPrimitive(streaming), payload["stream"])
+    }
+
+    @Test
+    fun `cache support is opt in and maps keys breakpoints and cache hits`() = runTest {
+        val request = ChatRequest(ModelTarget(providerId, "model"), listOf(Message.system("context"), Message.user("hi")),
+            caching = PromptCaching(key = "session", messageBreakpoints = setOf(0)))
+        assertFailsWith<UnsupportedCapabilityException> { provider.complete(request) }
+        assertEquals(0, server.requestCount)
+        val cachedProvider = OpenAiCompatibleProvider(providerId, "secret", server.url("/").toString(),
+            capabilities = OpenAiCompatibleProvider.DEFAULT_CAPABILITIES + setOf(Capability.PROMPT_CACHING, Capability.CACHE_KEY, Capability.CACHE_BREAKPOINTS))
+        val usage = "\"usage\":{\"prompt_tokens\":110,\"completion_tokens\":2,\"prompt_tokens_details\":{\"cached_tokens\":100}}"
+        for (streaming in listOf(false, true)) {
+            val response = if (streaming) "data: {\"choices\":[{\"delta\":{\"content\":\"ok\"},\"finish_reason\":\"stop\"}],$usage}\n\ndata: [DONE]\n\n"
+                else "{\"choices\":[{\"message\":{\"content\":\"ok\"},\"finish_reason\":\"stop\"}],$usage}"
+            server.enqueue(MockResponse.Builder().body(response).build())
+            val result = if (streaming) assertIs<StreamEvent.Completed>(cachedProvider.stream(request).toList().last()).response else cachedProvider.complete(request)
+            assertEquals(110, result.usage.inputTokens)
+            assertEquals(100, result.usage.cacheReadInputTokens)
+            val body = Json.parseToJsonElement(server.takeRequest().body!!.utf8()).jsonObject
+            assertEquals("session", body["prompt_cache_key"]!!.jsonPrimitive.content)
+            assertEquals("explicit", body["prompt_cache_options"]!!.jsonObject["mode"]!!.jsonPrimitive.content)
+            assertTrue("prompt_cache_breakpoint" in body["messages"]!!.jsonArray[0].jsonObject["content"]!!.jsonArray[0].jsonObject)
+        }
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = ["null", "{}", "{\"cached_tokens\":null}"])
+    fun `optional cache details remain unreported`(details: String) = runTest {
+        server.enqueue(MockResponse.Builder().body(
+            """{"choices":[{"message":{"content":"ok"}}],"usage":{"prompt_tokens":10,"completion_tokens":2,"prompt_tokens_details":$details}}""",
+        ).build())
+        val result = provider.complete(ChatRequest(ModelTarget(providerId, "model"), listOf(Message.user("hi"))))
+        assertEquals(null, result.usage.cacheReadInputTokens)
+        assertEquals(12, result.usage.totalTokens)
     }
 
     companion object {

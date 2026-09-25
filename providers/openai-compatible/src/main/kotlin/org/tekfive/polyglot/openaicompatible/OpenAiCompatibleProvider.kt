@@ -1,5 +1,6 @@
 package org.tekfive.polyglot.openaicompatible
 
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
@@ -32,6 +33,7 @@ import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 import okhttp3.Response
+import org.tekfive.polyglot.AccessTokenProvider
 import org.tekfive.polyglot.Capability
 import org.tekfive.polyglot.ChatProvider
 import org.tekfive.polyglot.ChatRequest
@@ -52,6 +54,8 @@ import org.tekfive.polyglot.ReasoningEffort
 import org.tekfive.polyglot.ResponseFormat
 import org.tekfive.polyglot.StreamEvent
 import org.tekfive.polyglot.ToolChoice
+import org.tekfive.polyglot.validateCaching
+import java.time.Duration
 import org.tekfive.polyglot.Usage
 import java.io.IOException
 import kotlin.coroutines.resume
@@ -60,24 +64,46 @@ import kotlin.coroutines.resumeWithException
 /**
  * Adapter for services that implement the OpenAI Chat Completions and Embeddings HTTP APIs.
  * Use the dedicated provider modules for OpenAI itself and other vendors with official SDKs.
+ *
+ * [tokenProvider] supplies credentials before each operation. Authorization in [extraHeaders]
+ * is rejected, and redirects are disabled on the supplied [client] to keep credentials at the
+ * configured endpoint. Other client settings and shared connection resources are preserved.
  */
 class OpenAiCompatibleProvider(
     override val id: ProviderId,
-    apiKey: String,
+    private val tokenProvider: AccessTokenProvider,
     baseUrl: String,
-    private val client: OkHttpClient = OkHttpClient(),
+    client: OkHttpClient = OkHttpClient(),
     extraHeaders: Map<String, String> = emptyMap(),
     override val capabilities: Set<Capability> = DEFAULT_CAPABILITIES,
     private val json: Json = DEFAULT_JSON,
+    private val cacheKeyHeader: String? = null,
 ) : ChatProvider, EmbeddingProvider {
+    constructor(
+        id: ProviderId,
+        apiKey: String,
+        baseUrl: String,
+        client: OkHttpClient = OkHttpClient(),
+        extraHeaders: Map<String, String> = emptyMap(),
+        capabilities: Set<Capability> = DEFAULT_CAPABILITIES,
+        json: Json = DEFAULT_JSON,
+    ) : this(id, AccessTokenProvider { apiKey }, baseUrl, client, extraHeaders, capabilities, json)
+
+    init {
+        require(extraHeaders.keys.none { it.equals("Authorization", ignoreCase = true) }) {
+            "Use apiKey or tokenProvider to configure Authorization"
+        }
+    }
+
+    // Credentials and request bodies must stay at the configured endpoint, including same-host redirects.
+    private val client = client.newBuilder().followRedirects(false).followSslRedirects(false).build()
     private val endpoint = baseUrl.trimEnd('/').removeSuffix("/v1").toHttpUrl()
     private val headers = Headers.Builder()
-        .add("Authorization", "Bearer $apiKey")
         .apply { extraHeaders.forEach { (name, value) -> add(name, value) } }
         .build()
 
     override suspend fun complete(request: ChatRequest): ChatResponse {
-        val response = execute("v1/chat/completions", chatBody(request, stream = false))
+        val response = execute("v1/chat/completions", chatBody(request, stream = false), request.caching?.key)
         return response.use { httpResponse ->
             val body = responseBody(httpResponse)
             parseChatResponse(request, json.parseToJsonElement(body).jsonObject).copy(
@@ -87,7 +113,7 @@ class OpenAiCompatibleProvider(
     }
 
     override fun stream(request: ChatRequest): Flow<StreamEvent> = flow {
-        val response = execute("v1/chat/completions", chatBody(request, stream = true))
+        val response = execute("v1/chat/completions", chatBody(request, stream = true), request.caching?.key)
         response.use { httpResponse ->
             if (!httpResponse.isSuccessful) throw httpError(httpResponse, httpResponse.body.string())
             val source = httpResponse.body.source()
@@ -171,50 +197,66 @@ class OpenAiCompatibleProvider(
         }
     }
 
-    private fun chatBody(request: ChatRequest, stream: Boolean) = buildJsonObject {
-        put("model", request.target.model)
-        put("stream", stream)
-        if (stream) putJsonObject("stream_options") { put("include_usage", true) }
-        putJsonArray("messages") { request.messages.forEach { add(message(it)) } }
-        request.options.temperature?.let { put("temperature", it) }
-        request.options.maxOutputTokens?.let { put("max_completion_tokens", it) }
-        request.options.topP?.let { put("top_p", it) }
-        request.options.presencePenalty?.let { put("presence_penalty", it) }
-        request.options.frequencyPenalty?.let { put("frequency_penalty", it) }
-        request.options.reasoningEffort
-            ?.takeUnless { it == ReasoningEffort.NONE }
-            ?.let { put("reasoning_effort", it.name.lowercase()) }
-        if (request.options.stopSequences.isNotEmpty()) {
-            putJsonArray("stop") { request.options.stopSequences.forEach { add(JsonPrimitive(it)) } }
-        }
-        if (request.tools.isNotEmpty()) {
-            putJsonArray("tools") {
-                request.tools.forEach { tool ->
-                    add(buildJsonObject {
-                        put("type", "function")
-                        putJsonObject("function") {
-                            put("name", tool.name)
-                            put("description", tool.description)
-                            put("parameters", tool.inputSchema)
-                        }
-                    })
+    private fun chatBody(request: ChatRequest, stream: Boolean): JsonObject {
+        request.validateCaching(this)
+        return buildJsonObject {
+            put("model", request.target.model)
+            put("stream", stream)
+            if (stream) putJsonObject("stream_options") { put("include_usage", true) }
+            putJsonArray("messages") {
+                request.messages.forEachIndexed { index, value ->
+                    val mapped = message(value)
+                    add(if (index in request.caching?.messageBreakpoints.orEmpty()) withCacheBreakpoint(mapped) else mapped)
                 }
             }
-        }
-        request.toolChoice?.let { put("tool_choice", toolChoice(it)) }
-        when (val format = request.responseFormat) {
-            ResponseFormat.Text -> Unit
-            is ResponseFormat.JsonSchema -> putJsonObject("response_format") {
-                put("type", "json_schema")
-                putJsonObject("json_schema") {
-                    put("name", format.name)
-                    format.description?.let { put("description", it) }
-                    put("strict", format.strict)
-                    put("schema", format.schema)
+            request.caching?.let { cache ->
+                if (cacheKeyHeader == null) cache.key?.let { put("prompt_cache_key", it) }
+                require(cache.ttl == null || cache.ttl == Duration.ofMinutes(30)) { "OpenAI-format cache TTL must be 30 minutes" }
+                if (cache.ttl != null || cache.messageBreakpoints.isNotEmpty()) putJsonObject("prompt_cache_options") {
+                    put("mode", if (cache.messageBreakpoints.isEmpty()) "implicit" else "explicit")
+                    cache.ttl?.let { put("ttl", "30m") }
                 }
             }
+            request.options.temperature?.let { put("temperature", it) }
+            request.options.maxOutputTokens?.let { put("max_completion_tokens", it) }
+            request.options.topP?.let { put("top_p", it) }
+            request.options.presencePenalty?.let { put("presence_penalty", it) }
+            request.options.frequencyPenalty?.let { put("frequency_penalty", it) }
+            request.options.reasoningEffort
+                ?.takeUnless { it == ReasoningEffort.NONE }
+                ?.let { put("reasoning_effort", it.name.lowercase()) }
+            if (request.options.stopSequences.isNotEmpty()) {
+                putJsonArray("stop") { request.options.stopSequences.forEach { add(JsonPrimitive(it)) } }
+            }
+            if (request.tools.isNotEmpty()) {
+                putJsonArray("tools") {
+                    request.tools.forEach { tool ->
+                        add(buildJsonObject {
+                            put("type", "function")
+                            putJsonObject("function") {
+                                put("name", tool.name)
+                                put("description", tool.description)
+                                put("parameters", tool.inputSchema)
+                            }
+                        })
+                    }
+                }
+            }
+            request.toolChoice?.let { put("tool_choice", toolChoice(it)) }
+            when (val format = request.responseFormat) {
+                ResponseFormat.Text -> Unit
+                is ResponseFormat.JsonSchema -> putJsonObject("response_format") {
+                    put("type", "json_schema")
+                    putJsonObject("json_schema") {
+                        put("name", format.name)
+                        format.description?.let { put("description", it) }
+                        put("strict", format.strict)
+                        put("schema", format.schema)
+                    }
+                }
+            }
+            request.providerOptions.forEach { (key, value) -> put(key, value) }
         }
-        request.providerOptions.forEach { (key, value) -> put(key, value) }
     }
 
     private fun message(message: Message): JsonObject = buildJsonObject {
@@ -318,11 +360,22 @@ class OpenAiCompatibleProvider(
         get("reasoning")?.jsonPrimitive?.contentOrNull
             ?: get("reasoning_content")?.jsonPrimitive?.contentOrNull
 
-    private suspend fun execute(path: String, payload: JsonObject): Response {
+    private suspend fun execute(path: String, payload: JsonObject, cacheKey: String? = null): Response {
+        val token = try {
+            tokenProvider.accessToken().also {
+                require(it.isNotBlank() && it.all { char -> char.code in 33..126 }) { "Invalid access token" }
+            }
+        } catch (error: CancellationException) {
+            throw error
+        } catch (error: Exception) {
+            throw providerError(ProviderErrorKind.AUTHENTICATION, "Unable to obtain a valid access token", error)
+        }
         val url = endpoint.newBuilder().addPathSegments(path).build()
         val request = Request.Builder()
             .url(url)
             .headers(headers)
+            .header("Authorization", "Bearer $token")
+            .apply { if (cacheKeyHeader != null && cacheKey != null) header(cacheKeyHeader, cacheKey) }
             .post(payload.toString().toRequestBody(JSON_MEDIA_TYPE))
             .build()
         return try {
@@ -360,6 +413,8 @@ class OpenAiCompatibleProvider(
 
     private fun parseUsage(value: JsonObject?): Usage = Usage(
         inputTokens = value?.get("prompt_tokens")?.jsonPrimitive?.longOrNull,
+        cacheReadInputTokens = value?.get("prompt_tokens_details")?.takeUnless { it is JsonNull }
+            ?.jsonObject?.get("cached_tokens")?.jsonPrimitive?.longOrNull,
         outputTokens = value?.get("completion_tokens")?.jsonPrimitive?.longOrNull,
         reasoningTokens = value?.get("completion_tokens_details")?.jsonObject
             ?.get("reasoning_tokens")?.jsonPrimitive?.longOrNull,
@@ -441,3 +496,19 @@ private fun String?.toFinishReason(): FinishReason = when (this) {
 }
 
 private fun JsonArray?.orEmpty(): JsonArray = this ?: JsonArray(emptyList())
+
+private fun withCacheBreakpoint(message: JsonObject): JsonObject {
+    require("tool_calls" !in message) { "OpenAI-format breakpoints require content, not tool calls" }
+    val content = message["content"]
+    val parts = when (content) {
+        is JsonPrimitive -> {
+            require(content.isString && content.content.isNotBlank()) { "Cache breakpoint requires nonempty content" }
+            listOf(buildJsonObject { put("type", "text"); put("text", content.content) })
+        }
+        is JsonArray -> content.map { it.jsonObject }
+        else -> error("Cache breakpoint requires content")
+    }
+    require(parts.isNotEmpty()) { "Cache breakpoint requires content" }
+    val last = JsonObject(parts.last() + ("prompt_cache_breakpoint" to buildJsonObject { put("mode", "explicit") }))
+    return JsonObject(message + ("content" to JsonArray(parts.dropLast(1) + last)))
+}
