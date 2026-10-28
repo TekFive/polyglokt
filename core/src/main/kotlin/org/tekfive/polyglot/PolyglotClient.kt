@@ -37,8 +37,8 @@ class PolyglotClient(
     }
 
     suspend fun completeJson(request: ChatRequest): JsonElement {
-        require(request.responseFormat is ResponseFormat.JsonSchema) {
-            "completeJson requires ResponseFormat.JsonSchema"
+        require(request.responseFormat != ResponseFormat.Text) {
+            "completeJson requires ResponseFormat.Json or ResponseFormat.JsonSchema"
         }
         val response = complete(request)
         return response.structuredOutput ?: runCatching { Json.parseToJsonElement(response.text) }
@@ -118,6 +118,7 @@ class PolyglotClient(
                 if (streaming) add(Capability.STREAMING_TOOL_CALLS)
             }
             if (request.responseFormat is ResponseFormat.JsonSchema) add(Capability.STRUCTURED_OUTPUT)
+            if (request.responseFormat == ResponseFormat.Json) add(Capability.JSON_OUTPUT)
             if (request.options.reasoningEffort != null) add(Capability.REASONING)
             request.messages.flatMap { it.content }.forEach {
                 when (it) {

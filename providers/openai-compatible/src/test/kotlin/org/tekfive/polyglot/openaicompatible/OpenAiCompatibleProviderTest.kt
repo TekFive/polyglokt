@@ -27,6 +27,7 @@ import org.tekfive.polyglot.ProviderErrorKind
 import org.tekfive.polyglot.ProviderException
 import org.tekfive.polyglot.ProviderId
 import org.tekfive.polyglot.ReasoningEffort
+import org.tekfive.polyglot.ResponseFormat
 import org.tekfive.polyglot.StreamEvent
 import org.tekfive.polyglot.ToolDefinition
 import kotlin.test.AfterTest
@@ -52,6 +53,27 @@ class OpenAiCompatibleProviderTest {
     @AfterTest
     fun tearDown() {
         server.close()
+    }
+
+    @Test
+    fun `json output asks for a JSON object and parses the answer`() = runTest {
+        server.enqueue(
+            MockResponse.Builder().code(200).body(
+                """{"id":"req-1","choices":[{"message":{"content":"{\"title\":\"Policy\"}"},"finish_reason":"stop"}]}""",
+            ).build(),
+        )
+
+        val response = provider.complete(
+            ChatRequest(
+                ModelTarget(providerId, "test-model"),
+                listOf(Message.user("Answer in JSON.")),
+                responseFormat = ResponseFormat.Json,
+            ),
+        )
+
+        val body = Json.parseToJsonElement(server.takeRequest().body?.utf8().orEmpty()).jsonObject
+        assertEquals("json_object", body["response_format"]?.jsonObject?.get("type")?.jsonPrimitive?.content)
+        assertEquals("Policy", response.structuredOutput?.jsonObject?.get("title")?.jsonPrimitive?.content)
     }
 
     @Test

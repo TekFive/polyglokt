@@ -41,6 +41,7 @@ import kotlinx.serialization.json.doubleOrNull
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.longOrNull
 import org.tekfive.polyglot.Capability
+import org.tekfive.polyglot.UnsupportedCapabilityException
 import org.tekfive.polyglot.ChatProvider
 import org.tekfive.polyglot.ChatRequest
 import org.tekfive.polyglot.ChatResponse
@@ -222,6 +223,8 @@ class AnthropicProvider private constructor(
             outputConfig.effort(OutputConfig.Effort.of(it.name.lowercase()))
             hasOutputConfig = true
         }
+        // Anthropic has no JSON mode without a schema, so it never answers as text in its place.
+        if (responseFormat == ResponseFormat.Json) throw UnsupportedCapabilityException(ID, Capability.JSON_OUTPUT)
         (responseFormat as? ResponseFormat.JsonSchema)?.let { format ->
             val schema = JsonOutputFormat.Schema.builder()
                 .putAllAdditionalProperties(format.schema.toSdkProperties())

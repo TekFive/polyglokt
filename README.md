@@ -37,14 +37,14 @@ repositories {
 }
 
 dependencies {
-    implementation("org.tekfive.polyglotkt:polyglotkt-core:1.1.0")
-    implementation("org.tekfive.polyglotkt:polyglotkt-openai:1.1.0")
+    implementation("org.tekfive.polyglotkt:polyglotkt-core:1.2.0")
+    implementation("org.tekfive.polyglotkt:polyglotkt-openai:1.2.0")
     // Add only what you use:
-    // implementation("org.tekfive.polyglotkt:polyglotkt-anthropic:1.1.0")
-    // implementation("org.tekfive.polyglotkt:polyglotkt-gemini:1.1.0")
-    // implementation("org.tekfive.polyglotkt:polyglotkt-bedrock:1.1.0")
-    // implementation("org.tekfive.polyglotkt:polyglotkt-grok:1.1.0")
-    // implementation("org.tekfive.polyglotkt:polyglotkt-openai-compatible:1.1.0")
+    // implementation("org.tekfive.polyglotkt:polyglotkt-anthropic:1.2.0")
+    // implementation("org.tekfive.polyglotkt:polyglotkt-gemini:1.2.0")
+    // implementation("org.tekfive.polyglotkt:polyglotkt-bedrock:1.2.0")
+    // implementation("org.tekfive.polyglotkt:polyglotkt-grok:1.2.0")
+    // implementation("org.tekfive.polyglotkt:polyglotkt-openai-compatible:1.2.0")
 }
 ```
 
@@ -59,7 +59,7 @@ repositories {
 }
 
 dependencies {
-    val polyglotKtVersion = "v1.1.0" // release tag or commit hash
+    val polyglotKtVersion = "v1.2.0" // release tag or commit hash
     implementation("com.github.TekFive.polyglotkt:polyglotkt-core:$polyglotKtVersion")
     implementation("com.github.TekFive.polyglotkt:polyglotkt-grok:$polyglotKtVersion")
 }
@@ -155,6 +155,23 @@ val conversation = Conversation(
 
 println(conversation.say("What is the weather in Chicago?").text)
 ```
+
+### JSON output
+
+`ResponseFormat.JsonSchema` asks for an answer that fits a schema and is checked by `Capability.STRUCTURED_OUTPUT`. `ResponseFormat.Json` asks only for well-formed JSON, through the provider's JSON mode, and is checked by `Capability.JSON_OUTPUT`. Use it when a schema is too large or too loose for a provider's structured output, and describe the shape in the prompt:
+
+```kotlin
+val response = client.complete(
+    ChatRequest(
+        target = ModelTarget(GeminiProvider.ID, "gemini-3.5-flash-lite"),
+        messages = listOf(Message.system("Answer with one JSON object: {\"title\": string}."), Message.user("Name this policy.")),
+        responseFormat = ResponseFormat.Json,
+    ),
+)
+val answer = response.structuredOutput // parsed JSON, or null when the text is not JSON
+```
+
+Gemini sends `responseMimeType: application/json` without a schema; OpenAI and OpenAI-compatible services, Grok included, send `response_format: {"type": "json_object"}`, and OpenAI requires the word "JSON" somewhere in the messages. Anthropic and Bedrock have no JSON mode without a schema, so they refuse the request before I/O. `completeJson` accepts either JSON format.
 
 ### Fallbacks
 

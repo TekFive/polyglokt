@@ -74,6 +74,7 @@ class GrokProvider(
             Capability.STREAMING,
             Capability.STREAMING_TOOL_CALLS,
             Capability.STRUCTURED_OUTPUT,
+            Capability.JSON_OUTPUT,
             Capability.TOOLS,
             Capability.REASONING,
             Capability.IMAGE_INPUT,

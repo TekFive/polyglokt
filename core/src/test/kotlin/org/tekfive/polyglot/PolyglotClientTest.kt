@@ -74,6 +74,19 @@ class PolyglotClientTest {
         assertEquals(4, conversation.messages().size)
     }
 
+    @Test
+    fun `json output needs a provider with a JSON mode`() = runTest {
+        var calls = 0
+        val client = PolyglotClient(listOf(stubProvider(primary.provider) { calls++; ChatResponse(primary, emptyList()) }))
+
+        val failure = assertFailsWith<UnsupportedCapabilityException> {
+            client.complete(ChatRequest(primary, listOf(Message.user("hello")), responseFormat = ResponseFormat.Json))
+        }
+
+        assertEquals(Capability.JSON_OUTPUT, failure.capability)
+        assertEquals(0, calls)
+    }
+
     private fun stubProvider(id: ProviderId, action: suspend (ChatRequest) -> ChatResponse) =
         object : ChatProvider {
             override val id = id

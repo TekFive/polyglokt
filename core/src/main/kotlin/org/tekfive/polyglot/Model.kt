@@ -26,6 +26,8 @@ enum class Capability {
     STREAMING,
     STREAMING_TOOL_CALLS,
     STRUCTURED_OUTPUT,
+    /** Answers that are well-formed JSON without a schema: [ResponseFormat.Json]. */
+    JSON_OUTPUT,
     TOOLS,
     REASONING,
     IMAGE_INPUT,
@@ -119,6 +121,14 @@ sealed interface ToolChoice {
 
 sealed interface ResponseFormat {
     data object Text : ResponseFormat
+
+    /**
+     * One JSON value with no schema, through the provider's JSON mode, which keeps the answer well-formed JSON. Use it
+     * when a schema is too large or too loose for a provider's structured output; describe the shape in the prompt.
+     * OpenAI requires the word "JSON" somewhere in the messages.
+     */
+    data object Json : ResponseFormat
+
     data class JsonSchema(
         val name: String,
         val schema: JsonObject,

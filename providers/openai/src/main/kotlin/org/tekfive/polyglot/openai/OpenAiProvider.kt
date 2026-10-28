@@ -8,6 +8,7 @@ import com.openai.errors.OpenAIServiceException
 import com.openai.models.FunctionDefinition
 import com.openai.models.FunctionParameters
 import com.openai.models.ReasoningEffort as OpenAiReasoningEffort
+import com.openai.models.ResponseFormatJsonObject
 import com.openai.models.ResponseFormatJsonSchema
 import com.openai.models.chat.completions.ChatCompletion
 import com.openai.models.chat.completions.ChatCompletionContentPart
@@ -241,6 +242,9 @@ class OpenAiProvider private constructor(
                 )
             }
         }
+        if (responseFormat == ResponseFormat.Json) {
+            builder.responseFormat(ResponseFormatJsonObject.builder().build())
+        }
         (responseFormat as? ResponseFormat.JsonSchema)?.let { format ->
             val schema = ResponseFormatJsonSchema.JsonSchema.Schema.builder()
                 .putAllAdditionalProperties(format.schema.mapValues { JsonValue.from(it.value.toAny()) })
@@ -274,7 +278,7 @@ class OpenAiProvider private constructor(
             content,
             usage().orElse(null)?.toUsage() ?: Usage(),
             choice.finishReason().asString().toFinishReason(),
-            if (request.responseFormat is ResponseFormat.JsonSchema && text.isNotBlank()) {
+            if (request.responseFormat != ResponseFormat.Text && text.isNotBlank()) {
                 runCatching { JSON.parseToJsonElement(text) }.getOrNull()
             } else null,
             mapOf("requestId" to id()),
@@ -354,6 +358,7 @@ class OpenAiProvider private constructor(
             Capability.STREAMING,
             Capability.STREAMING_TOOL_CALLS,
             Capability.STRUCTURED_OUTPUT,
+            Capability.JSON_OUTPUT,
             Capability.TOOLS,
             Capability.REASONING,
             Capability.EMBEDDINGS,

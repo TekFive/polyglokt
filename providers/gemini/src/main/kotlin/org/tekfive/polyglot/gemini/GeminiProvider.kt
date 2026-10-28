@@ -243,9 +243,13 @@ class GeminiProvider private constructor(
                 ThinkingConfig.builder().includeThoughts(true).thinkingLevel(it.name).build(),
             )
         }
-        (responseFormat as? ResponseFormat.JsonSchema)?.let {
-            builder.responseMimeType("application/json")
-            builder.responseJsonSchema(it.schema.toAnyMap())
+        when (val format = responseFormat) {
+            ResponseFormat.Text -> Unit
+            ResponseFormat.Json -> builder.responseMimeType("application/json")
+            is ResponseFormat.JsonSchema -> {
+                builder.responseMimeType("application/json")
+                builder.responseJsonSchema(format.schema.toAnyMap())
+            }
         }
         if (tools.isNotEmpty()) {
             val declarations = tools.map {
@@ -293,7 +297,7 @@ class GeminiProvider private constructor(
                 cacheReadInputTokens = usage?.cachedContentTokenCount()?.orElse(null)?.toLong(),
             ),
             finishReason().toString().toFinishReason(),
-            if (request.responseFormat is ResponseFormat.JsonSchema && text.isNotBlank()) {
+            if (request.responseFormat != ResponseFormat.Text && text.isNotBlank()) {
                 runCatching { JSON.parseToJsonElement(text) }.getOrNull()
             } else null,
             responseId().orElse(null)?.let { mapOf("requestId" to it) }.orEmpty(),
@@ -334,6 +338,7 @@ class GeminiProvider private constructor(
             Capability.STREAMING,
             Capability.STREAMING_TOOL_CALLS,
             Capability.STRUCTURED_OUTPUT,
+            Capability.JSON_OUTPUT,
             Capability.TOOLS,
             Capability.REASONING,
             Capability.IMAGE_INPUT,

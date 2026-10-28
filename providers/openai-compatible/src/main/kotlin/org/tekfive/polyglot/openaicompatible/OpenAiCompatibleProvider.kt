@@ -245,6 +245,9 @@ class OpenAiCompatibleProvider(
             request.toolChoice?.let { put("tool_choice", toolChoice(it)) }
             when (val format = request.responseFormat) {
                 ResponseFormat.Text -> Unit
+                ResponseFormat.Json -> putJsonObject("response_format") {
+                    put("type", "json_object")
+                }
                 is ResponseFormat.JsonSchema -> putJsonObject("response_format") {
                     put("type", "json_schema")
                     putJsonObject("json_schema") {
@@ -341,7 +344,7 @@ class OpenAiCompatibleProvider(
             }
         }
         val text = content.filterIsInstance<ContentPart.Text>().joinToString("") { it.text }
-        val structured = if (request.responseFormat is ResponseFormat.JsonSchema && text.isNotBlank()) {
+        val structured = if (request.responseFormat != ResponseFormat.Text && text.isNotBlank()) {
             runCatching { json.parseToJsonElement(text) }.getOrNull()
         } else null
         return ChatResponse(
@@ -460,6 +463,7 @@ class OpenAiCompatibleProvider(
             Capability.STREAMING,
             Capability.STREAMING_TOOL_CALLS,
             Capability.STRUCTURED_OUTPUT,
+            Capability.JSON_OUTPUT,
             Capability.TOOLS,
             Capability.IMAGE_INPUT,
             Capability.AUDIO_INPUT,
